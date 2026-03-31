@@ -117,12 +117,18 @@ class ArrayPatchInterpolator:
 
 
 class VSPILinearOperator(LinearOperator):
-    """Linear operator A for VSPI: A[M,N] * X[N,P] = B[M,P]
+    # """Linear operator A for VSPI: A[M,N] * X[N,P] = B[M,P]
+
+    # Where:
+    #     M: number of XRF positions (scan points)
+    #     N: number of ptychography object pixels
+    #     P: number of XRF channels
+    # """
+    """Linear operator A for VSPI: A[M,N] * X[N] = B[M]
 
     Where:
         M: number of XRF positions (scan points)
         N: number of ptychography object pixels
-        P: number of XRF channels
     """
 
     def __init__(self, product: Product) -> None:
@@ -164,16 +170,17 @@ class VSPILinearOperator(LinearOperator):
 
         return y_px, x_px
 
-    def _matvec(self, x: np.ndarray) -> np.ndarray:
-        """Forward operator: A * x
+    def _matvec(self, v: np.ndarray) -> np.ndarray:
+        """Forward operator: A * v
 
         Args:
-            x: Flattened object array (N,)
+            v: Flattened object array (N,)
 
         Returns:
             Result vector (M,)
         """
-        object_array = x.reshape((self._object_height_px, self._object_width_px))
+        # input v is the upscaled XRF array after flattening
+        object_array = v.reshape((self._object_height_px, self._object_width_px))
         result = np.zeros(len(self._product.probe_positions))
 
         # Get probe intensity (sum over modes)
@@ -191,15 +198,16 @@ class VSPILinearOperator(LinearOperator):
 
         return result
 
-    def _rmatvec(self, x: np.ndarray) -> np.ndarray:
-        """Adjoint operator: A^T * x
+    def _rmatvec(self, u: np.ndarray) -> np.ndarray:
+        """Adjoint operator: A^T * u
 
         Args:
-            x: Input vector (M,)
+            v: Input vector (M,)
 
         Returns:
             Flattened object array (N,)
         """
+        
         object_array = np.zeros((self._object_height_px, self._object_width_px))
 
         # Get probe intensity (sum over modes)
@@ -213,7 +221,7 @@ class VSPILinearOperator(LinearOperator):
 
             # Accumulate weighted patch
             interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-            interpolator.accumulate_patch(x[index] * psf)
+            interpolator.accumulate_patch(u[index] * psf)
 
         return object_array.flatten()
 
@@ -269,8 +277,8 @@ class VSPIFluorescenceEnhancingAlgorithm:
 
             # Solve the linear system A * e_cps = m_cps
             result = lsmr(
-                A, # size --> number of probe positions x number of pixels in ptycho object
-                m_cps, # size --> number of counts per second measurements (longer)
+                A, # size --> number of probe positions x number of pixels in ptycho object (30777 x 153908)
+                m_cps, # size --> number of counts per second measurements (3077)
                 damp=self.damping_factor,
                 maxiter=self.max_iterations,
                 show=True,
