@@ -11,8 +11,8 @@ import logging
 import time
 
 import numpy as np
-from scipy.sparse.linalg import lsmr, LinearOperator
-
+import cupy as cp
+from chronos.timer_utils import timer, InlineTimer
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,7 @@ class ArrayPatchInterpolator:
         # Extract patch support region from full object
         self._support = array[ymin_wh:ymax_wh, xmin_wh:xmax_wh]
 
+    # @timer()
     def get_patch(self) -> np.ndarray:
         """Interpolate array support to extract patch."""
         patch = self._weight00 * self._support[:-1, :-1]
@@ -108,122 +109,147 @@ class ArrayPatchInterpolator:
         patch += self._weight11 * self._support[1:, 1:]
         return patch
 
+    # @timer()
     def accumulate_patch(self, patch: np.ndarray) -> None:
         """Add patch update to array support."""
+        t0 = time.time()
+        # self._weight00 * patch
+        # self._weight01 * patch
+        # self._weight10 * patch
+        # self._weight11 * patch
         self._support[:-1, :-1] += self._weight00 * patch
         self._support[:-1, 1:] += self._weight01 * patch
         self._support[1:, :-1] += self._weight10 * patch
         self._support[1:, 1:] += self._weight11 * patch
+        print(time.time()-t0)
 
 
-class VSPILinearOperator(LinearOperator):
-    # """Linear operator A for VSPI: A[M,N] * X[N,P] = B[M,P]
+def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
+    """Factory that creates a VSPILinearOperator bound to the given array module and base class.
 
-    # Where:
-    #     M: number of XRF positions (scan points)
-    #     N: number of ptychography object pixels
-    #     P: number of XRF channels
-    # """
-    """Linear operator A for VSPI: A[M,N] * X[N] = B[M]
+    Args:
+        product: Ptychography reconstruction product (probe/object_array may be cupy or numpy)
+        xp: Array module to use (numpy or cupy)
+        LinearOperator: LinearOperator base class (scipy or cupyx)
 
-    Where:
-        M: number of XRF positions (scan points)
-        N: number of ptychography object pixels
+    Returns:
+        VSPILinearOperator instance
     """
 
-    def __init__(self, product: Product) -> None:
-        """Initialize the linear operator.
+    class VSPILinearOperator(LinearOperator):
+        # """Linear operator A for VSPI: A[M,N] * X[N,P] = B[M,P]
 
-        Args:
-            product: Ptychography reconstruction product
+        # Where:
+        #     M: number of XRF positions (scan points)
+        #     N: number of ptychography object pixels
+        #     P: number of XRF channels
+        # """
+        """Linear operator A for VSPI: A[M,N] * X[N] = B[M]
+
+        Where:
+            M: number of XRF positions (scan points)
+            N: number of ptychography object pixels
         """
-        M = len(product.probe_positions)  # Number of scan points
-        N = product.object_array.shape[0] * product.object_array.shape[1]  # Total pixels
-        super().__init__(float, (M, N))
-        self._product = product
 
-        # Cache object dimensions
-        self._object_height_px = product.object_array.shape[0]
-        self._object_width_px = product.object_array.shape[1]
+        @timer()
+        def __init__(self) -> None:
+            M = len(product.probe_positions)  # Number of scan points
+            N = product.object_array.shape[0] * product.object_array.shape[1]  # Total pixels
+            super().__init__(float, (M, N))
 
-        # Cache pixel size and center
-        self._pixel_height_m = product.pixel_size_m[0]
-        self._pixel_width_m = product.pixel_size_m[1]
-        self._center_y_m = product.object_center_m[0]
-        self._center_x_m = product.object_center_m[1]
+            # probe_positions stays as numpy for efficient Python-level iteration
+            self._probe_positions = product.probe_positions
+            self._probe = product.probe
+            self._object_height_px = product.object_array.shape[0]
+            self._object_width_px = product.object_array.shape[1]
+            self._pixel_height_m = product.pixel_size_m[0]
+            self._pixel_width_m = product.pixel_size_m[1]
+            self._center_y_m = product.object_center_m[0]
+            self._center_x_m = product.object_center_m[1]
+            self._object_array = product.object_array
 
-    def _probe_to_object_coords(self, probe_y_m: float, probe_x_m: float) -> tuple[float, float]:
-        """Convert probe coordinates (meters) to object pixel coordinates.
+        # @timer()
+        def _probe_to_object_coords(self, probe_y_m: float, probe_x_m: float) -> tuple[float, float]:
+            """Convert probe coordinates (meters) to object pixel coordinates.
 
-        Args:
-            probe_y_m: Probe Y position in meters
-            probe_x_m: Probe X position in meters
+            Args:
+                probe_y_m: Probe Y position in meters
+                probe_x_m: Probe X position in meters
 
-        Returns:
-            (y_px, x_px) in object pixel coordinates
-        """
-        ry_px = self._object_height_px / 2
-        rx_px = self._object_width_px / 2
+            Returns:
+                (y_px, x_px) in object pixel coordinates
+            """
+            ry_px = self._object_height_px / 2
+            rx_px = self._object_width_px / 2
 
-        y_px = (probe_y_m - self._center_y_m) / self._pixel_height_m + ry_px
-        x_px = (probe_x_m - self._center_x_m) / self._pixel_width_m + rx_px
+            y_px = (probe_y_m - self._center_y_m) / self._pixel_height_m + ry_px
+            x_px = (probe_x_m - self._center_x_m) / self._pixel_width_m + rx_px
 
-        return y_px, x_px
+            return y_px, x_px
 
-    def _matvec(self, v: np.ndarray) -> np.ndarray:
-        """Forward operator: A * v
+        @timer()
+        def _matvec(self, v) -> np.ndarray:
+            """Forward operator: A * v
 
-        Args:
-            v: Flattened object array (N,)
+            Args:
+                v: Flattened object array (N,)
 
-        Returns:
-            Result vector (M,)
-        """
-        # input v is the upscaled XRF array after flattening
-        object_array = v.reshape((self._object_height_px, self._object_width_px))
-        result = np.zeros(len(self._product.probe_positions))
+            Returns:
+                Result vector (M,)
+            """
+            # input v is the upscaled XRF array after flattening
+            object_array = v.reshape((self._object_height_px, self._object_width_px))
+            result = xp.zeros(len(self._probe_positions))
 
-        # Get probe intensity (sum over modes)
-        probe_intensity = np.sum(np.abs(self._product.probe) ** 2, axis=0)
-        psf = probe_intensity / probe_intensity.sum()
+            # Get probe intensity (sum over modes)
+            probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
+            psf = probe_intensity / probe_intensity.sum()
 
-        for index, position in enumerate(self._product.probe_positions):
-            # Convert probe position to object coordinates
-            probe_y_m, probe_x_m = position
-            obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+            inline_timer = InlineTimer("Extract patches")
+            inline_timer.start()
+            for index, position in enumerate(self._probe_positions):
+                # Convert probe position to object coordinates
+                probe_y_m, probe_x_m = float(position[0]), float(position[1])
+                obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
 
-            # Extract and accumulate patch
-            interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-            result[index] = np.sum(psf * interpolator.get_patch())
+                # Extract and accumulate patch
+                interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+                result[index] = xp.sum(psf * interpolator.get_patch())
+            inline_timer.end()
 
-        return result
+            return result
 
-    def _rmatvec(self, u: np.ndarray) -> np.ndarray:
-        """Adjoint operator: A^T * u
+        @timer()
+        def _rmatvec(self, u) -> np.ndarray:
+            """Adjoint operator: A^T * u
 
-        Args:
-            v: Input vector (M,)
+            Args:
+                v: Input vector (M,)
 
-        Returns:
-            Flattened object array (N,)
-        """
-        
-        object_array = np.zeros((self._object_height_px, self._object_width_px))
+            Returns:
+                Flattened object array (N,)
+            """
+            object_array = xp.zeros((self._object_height_px, self._object_width_px))
 
-        # Get probe intensity (sum over modes)
-        probe_intensity = np.sum(np.abs(self._product.probe) ** 2, axis=0)
-        psf = probe_intensity / probe_intensity.sum()
+            # Get probe intensity (sum over modes)
+            probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
+            psf = probe_intensity / probe_intensity.sum()
+            
+            inline_timer = InlineTimer("Accumulate patches")
+            inline_timer.start()
+            for index, position in enumerate(self._probe_positions):
+                # Convert probe position to object coordinates
+                probe_y_m, probe_x_m = float(position[0]), float(position[1])
+                obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
 
-        for index, position in enumerate(self._product.probe_positions):
-            # Convert probe position to object coordinates
-            probe_y_m, probe_x_m = position
-            obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+                # Accumulate weighted patch
+                interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+                interpolator.accumulate_patch(u[index] * psf)
+            inline_timer.end()
 
-            # Accumulate weighted patch
-            interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-            interpolator.accumulate_patch(u[index] * psf)
+            return object_array.flatten()
 
-        return object_array.flatten()
+    return VSPILinearOperator()
 
 
 class VSPIFluorescenceEnhancingAlgorithm:
@@ -244,25 +270,53 @@ class VSPIFluorescenceEnhancingAlgorithm:
         self.damping_factor = damping_factor
         self.max_iterations = max_iterations
 
+    @timer()
     def enhance(
         self,
         dataset: FluorescenceDataset,
         product: Product,
         valid_pixel_index: Optional[list[int]] = None,
         select_maps: Optional[list[str]] = None,
+        use_gpu: bool = False,
     ) -> FluorescenceDataset:
         """Enhance fluorescence dataset using ptychography product.
 
         Args:
             dataset: Input fluorescence dataset
             product: Ptychography reconstruction product
+            valid_pixel_index: Optional indices of valid scan positions
+            select_maps: Optional list of element names to enhance (all if None)
+            use_gpu: If True, use GPU via cupyx for lsmr and array operations
 
         Returns:
             Enhanced fluorescence dataset with higher resolution
         """
-        enhanced_maps: list[ElementMap] = []
-        A = VSPILinearOperator(product)
+        if use_gpu:
+            from cupyx.scipy.sparse.linalg import lsmr, LinearOperator
+            xp = cp
+            # Move probe and object_array to GPU; probe_positions stays on CPU
+            # for efficient Python-level iteration over scan positions
+            inline_timer = InlineTimer("Move data to GPU")
+            inline_timer.start()
+            gpu_product = Product(
+                probe_positions=product.probe_positions,
+                probe=cp.asarray(product.probe),
+                object_array=cp.asarray(product.object_array),
+                pixel_size_m=product.pixel_size_m,
+                object_center_m=product.object_center_m,
+            )
+            inline_timer.end()
+        else:
+            from scipy.sparse.linalg import lsmr, LinearOperator
+            xp = np
+            gpu_product = product
 
+        enhanced_maps: list[ElementMap] = []
+        inline_timer = InlineTimer("Make VSPI linear operator")
+        inline_timer.start()
+        A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator)
+        inline_timer.end()
+        
         for emap in dataset.element_maps:
             if select_maps is not None and emap.name not in select_maps:
                 continue
@@ -275,14 +329,20 @@ class VSPIFluorescenceEnhancingAlgorithm:
             if valid_pixel_index is not None:
                 m_cps = m_cps[valid_pixel_index]
 
+            if use_gpu:
+                m_cps = cp.asarray(m_cps)
+
             # Solve the linear system A * e_cps = m_cps
+            inline_timer = InlineTimer("lsmr")
+            inline_timer.start()
             result = lsmr(
                 A, # size --> number of probe positions x number of pixels in ptycho object (30777 x 153908)
                 m_cps, # size --> number of counts per second measurements (3077)
                 damp=self.damping_factor,
                 maxiter=self.max_iterations,
-                show=True,
+                # show=True,
             )
+            inline_timer.end()
             # The way that this is defined implies that m_cps should be equal to the number of probe positions.
             # But how do you get the XRF data to be the correct size?
 
@@ -290,7 +350,16 @@ class VSPIFluorescenceEnhancingAlgorithm:
 
             # Reshape to object dimensions
             e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
-            e_cps = result[0].reshape(e_cps_shape)
+            e_cps = result[0]
+            if use_gpu:
+                inline_timer = InlineTimer("Move upscaled counts GPU->CPU")
+                inline_timer.start()
+                e_cps = cp.asnumpy(e_cps)
+                inline_timer.end()
+            inline_timer = InlineTimer("Reshape upscaled counts")
+            inline_timer.start()
+            e_cps = e_cps.reshape(e_cps_shape)
+            inline_timer.end()
 
             # Create enhanced element map
             emap_enhanced = ElementMap(emap.name, e_cps)
