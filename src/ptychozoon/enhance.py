@@ -12,7 +12,9 @@ import time
 
 import numpy as np
 import cupy as cp
+
 from chronos.timer_utils import timer, InlineTimer
+from .patches import extract_patches_fourier_shift, place_patches_fourier_shift
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +32,6 @@ class FluorescenceDataset:
     """Collection of element maps with metadata."""
 
     element_maps: Sequence[ElementMap]
-    # counts_per_second_path: str
-    # channel_names_path: str
 
 
 @dataclass(frozen=True)
@@ -112,16 +112,10 @@ class ArrayPatchInterpolator:
     # @timer()
     def accumulate_patch(self, patch: np.ndarray) -> None:
         """Add patch update to array support."""
-        t0 = time.time()
-        # self._weight00 * patch
-        # self._weight01 * patch
-        # self._weight10 * patch
-        # self._weight11 * patch
         self._support[:-1, :-1] += self._weight00 * patch
         self._support[:-1, 1:] += self._weight01 * patch
         self._support[1:, :-1] += self._weight10 * patch
         self._support[1:, 1:] += self._weight11 * patch
-        print(time.time()-t0)
 
 
 def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
@@ -205,19 +199,29 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
             probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
             psf = probe_intensity / probe_intensity.sum()
 
-            inline_timer = InlineTimer("Extract patches")
-            inline_timer.start()
-            for index, position in enumerate(self._probe_positions):
-                # Convert probe position to object coordinates
-                probe_y_m, probe_x_m = float(position[0]), float(position[1])
-                obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+            # interpolation: fourier
+            # convert probe positions to object coordinates
+            positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
+            extracted_patches = extract_patches_fourier_shift(object_array, positions_px, psf.shape)
+            # The extracted patches do not match the barycentric interpolation that was orignally here unless
+            # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`. 
+            result = (extracted_patches * psf).sum((1, 2))
 
-                # Extract and accumulate patch
-                interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-                result[index] = xp.sum(psf * interpolator.get_patch())
-            inline_timer.end()
+            # interpolation: barycentric
+            # result = xp.zeros(len(self._probe_positions))
+            # inline_timer = InlineTimer("Extract patches")
+            # inline_timer.start()
+            # for index, position in enumerate(self._probe_positions):
+            #     # Convert probe position to object coordinates
+            #     probe_y_m, probe_x_m = float(position[0]), float(position[1])
+            #     obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
 
-            return result
+            #     # Extract and accumulate patch
+            #     interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+            #     result[index] = xp.sum(psf * interpolator.get_patch())
+            # inline_timer.end()
+
+            return result # needs .get() ?
 
         @timer()
         def _rmatvec(self, u) -> np.ndarray:
@@ -234,18 +238,23 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
             # Get probe intensity (sum over modes)
             probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
             psf = probe_intensity / probe_intensity.sum()
-            
-            inline_timer = InlineTimer("Accumulate patches")
-            inline_timer.start()
-            for index, position in enumerate(self._probe_positions):
-                # Convert probe position to object coordinates
-                probe_y_m, probe_x_m = float(position[0]), float(position[1])
-                obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
 
-                # Accumulate weighted patch
-                interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-                interpolator.accumulate_patch(u[index] * psf)
-            inline_timer.end()
+            # interpolation: fourier
+            positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
+            object_array = place_patches_fourier_shift(object_array, positions_px, u[:, None, None] * psf, "set", adjoint_mode=False)
+            
+            # interpolation: barycentric
+            # inline_timer = InlineTimer("Accumulate patches")
+            # inline_timer.start()
+            # for index, position in enumerate(self._probe_positions):
+            #     # Convert probe position to object coordinates
+            #     probe_y_m, probe_x_m = float(position[0]), float(position[1])
+            #     obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+
+            #     # Accumulate weighted patch
+            #     interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+            #     interpolator.accumulate_patch(u[index] * psf)
+            # inline_timer.end()
 
             return object_array.flatten()
 
