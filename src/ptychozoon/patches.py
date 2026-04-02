@@ -291,6 +291,7 @@ def place_patches_fourier_shift(
         max(-sys.min(), 0),
         max(eys.max() - image.shape[0], 0),
     ]
+    pad_lengths = [int(x) for x in pad_lengths]
     image = xp.pad(image, pad_lengths)
     sys = sys + pad_lengths[2]
     eys = eys + pad_lengths[2]
