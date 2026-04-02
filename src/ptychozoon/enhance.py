@@ -14,6 +14,8 @@ import numpy as np
 import cupy as cp
 
 from chronos.timer_utils import timer, InlineTimer
+
+from ptychozoon.settings import DeconvolutionEnhancementSettings, InterpolationTypes
 from .patches import extract_patches_fourier_shift, place_patches_fourier_shift
 
 logger = logging.getLogger(__name__)
@@ -118,7 +120,7 @@ class ArrayPatchInterpolator:
         self._support[1:, 1:] += self._weight11 * patch
 
 
-def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
+def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: DeconvolutionEnhancementSettings):
     """Factory that creates a VSPILinearOperator bound to the given array module and base class.
 
     Args:
@@ -146,10 +148,12 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
         """
 
         @timer()
-        def __init__(self) -> None:
+        def __init__(self, interpolation_type: InterpolationTypes) -> None:
             M = len(product.probe_positions)  # Number of scan points
             N = product.object_array.shape[0] * product.object_array.shape[1]  # Total pixels
             super().__init__(float, (M, N))
+
+            self.interpolation_type = interpolation_type
 
             # probe_positions stays as numpy for efficient Python-level iteration
             self._probe_positions = product.probe_positions
@@ -199,29 +203,29 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
             probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
             psf = probe_intensity / probe_intensity.sum()
 
-            # interpolation: fourier
-            # convert probe positions to object coordinates
-            positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
-            extracted_patches = extract_patches_fourier_shift(object_array, positions_px, psf.shape)
-            # The extracted patches do not match the barycentric interpolation that was orignally here unless
-            # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`. 
-            result = (extracted_patches * psf).sum((1, 2))
+            inline_timer = InlineTimer("Extract patches")
+            inline_timer.start()
+            if self.interpolation_type == InterpolationTypes.FOURIER:
+                # convert probe positions to object coordinates
+                positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
+                positions_px += -xp.array([1, 1]) * 0.5
+                extracted_patches = extract_patches_fourier_shift(object_array, positions_px, psf.shape)
+                # The extracted patches do not match the barycentric interpolation that was orignally here unless
+                # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`. 
+                result = (extracted_patches * psf).sum((1, 2))
+            elif self.interpolation_type == InterpolationTypes.BARYCENTRIC:
+                result = xp.zeros(len(self._probe_positions))
+                for index, position in enumerate(self._probe_positions):
+                    # Convert probe position to object coordinates
+                    probe_y_m, probe_x_m = float(position[0]), float(position[1])
+                    obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
 
-            # interpolation: barycentric
-            # result = xp.zeros(len(self._probe_positions))
-            # inline_timer = InlineTimer("Extract patches")
-            # inline_timer.start()
-            # for index, position in enumerate(self._probe_positions):
-            #     # Convert probe position to object coordinates
-            #     probe_y_m, probe_x_m = float(position[0]), float(position[1])
-            #     obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+                    # Extract and accumulate patch
+                    interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+                    result[index] = xp.sum(psf * interpolator.get_patch())
+            inline_timer.end()
 
-            #     # Extract and accumulate patch
-            #     interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-            #     result[index] = xp.sum(psf * interpolator.get_patch())
-            # inline_timer.end()
-
-            return result # needs .get() ?
+            return result
 
         @timer()
         def _rmatvec(self, u) -> np.ndarray:
@@ -239,26 +243,32 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator):
             probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
             psf = probe_intensity / probe_intensity.sum()
 
-            # interpolation: fourier
-            positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
-            object_array = place_patches_fourier_shift(object_array, positions_px, u[:, None, None] * psf, "set", adjoint_mode=False)
-            
-            # interpolation: barycentric
-            # inline_timer = InlineTimer("Accumulate patches")
-            # inline_timer.start()
-            # for index, position in enumerate(self._probe_positions):
-            #     # Convert probe position to object coordinates
-            #     probe_y_m, probe_x_m = float(position[0]), float(position[1])
-            #     obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+            inline_timer = InlineTimer("Accumulate patches")
+            inline_timer.start()
+            if self.interpolation_type == InterpolationTypes.FOURIER:
+                positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
+                positions_px += -xp.array([1, 1]) * 0.5
+                object_array = place_patches_fourier_shift(
+                    object_array,
+                    positions_px,
+                    u[:, None, None] * psf,
+                    "add",
+                    adjoint_mode=False,
+                )
+            elif self.interpolation_type == InterpolationTypes.BARYCENTRIC:
+                for index, position in enumerate(self._probe_positions):
+                    # Convert probe position to object coordinates
+                    probe_y_m, probe_x_m = float(position[0]), float(position[1])
+                    obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
 
-            #     # Accumulate weighted patch
-            #     interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
-            #     interpolator.accumulate_patch(u[index] * psf)
-            # inline_timer.end()
+                    # Accumulate weighted patch
+                    interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+                    interpolator.accumulate_patch(u[index] * psf)
+            inline_timer.end()
 
             return object_array.flatten()
 
-    return VSPILinearOperator()
+    return VSPILinearOperator(interpolation_type=settings.interpolation)
 
 
 class VSPIFluorescenceEnhancingAlgorithm:
@@ -287,6 +297,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
         valid_pixel_index: Optional[list[int]] = None,
         select_maps: Optional[list[str]] = None,
         use_gpu: bool = False,
+        settings: Optional[DeconvolutionEnhancementSettings] = None,
     ) -> FluorescenceDataset:
         """Enhance fluorescence dataset using ptychography product.
 
@@ -300,6 +311,8 @@ class VSPIFluorescenceEnhancingAlgorithm:
         Returns:
             Enhanced fluorescence dataset with higher resolution
         """
+        if settings is None:
+            settings = DeconvolutionEnhancementSettings()
         if use_gpu:
             from cupyx.scipy.sparse.linalg import lsmr, LinearOperator
             xp = cp
@@ -323,7 +336,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
         enhanced_maps: list[ElementMap] = []
         inline_timer = InlineTimer("Make VSPI linear operator")
         inline_timer.start()
-        A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator)
+        A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator, settings)
         inline_timer.end()
         
         for emap in dataset.element_maps:
