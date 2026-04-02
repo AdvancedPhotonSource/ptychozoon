@@ -339,9 +339,14 @@ class VSPIFluorescenceEnhancingAlgorithm:
         A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator, settings)
         inline_timer.end()
         
-        for emap in dataset.element_maps:
-            if select_maps is not None and emap.name not in select_maps:
-                continue
+        if select_maps is not None:
+            selected_element_maps = [emap for emap in dataset.element_maps if emap.name in select_maps]
+        else:
+            selected_element_maps = dataset.element_maps
+
+        for emap in selected_element_maps:
+            # if select_maps is not None and emap.name not in select_maps:
+            #     continue
 
             logger.info(f'Enhancing "{emap.name}"...')
             tic = time.perf_counter()
