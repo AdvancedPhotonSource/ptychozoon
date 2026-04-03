@@ -9,13 +9,14 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 import logging
 import time
+import tqdm
 
 import numpy as np
 import cupy as cp
 
 from chronos.timer_utils import timer, InlineTimer
 
-from ptychozoon.settings import DeconvolutionEnhancementSettings, InterpolationTypes
+from ptychozoon.settings import DeconvolutionEnhancementSettings, InterpolationTypes, SolverTypes
 from .patches import extract_patches_fourier_shift, place_patches_fourier_shift
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,7 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
             self._pixel_width_m = product.pixel_size_m[1]
             self._center_y_m = product.object_center_m[0]
             self._center_x_m = product.object_center_m[1]
-            self._object_array = product.object_array
+            self._object_array = product.object_array * 0
 
         # @timer()
         def _probe_to_object_coords(self, probe_y_m: float, probe_x_m: float) -> tuple[float, float]:
@@ -212,7 +213,8 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
                 extracted_patches = extract_patches_fourier_shift(object_array, positions_px, psf.shape)
                 # The extracted patches do not match the barycentric interpolation that was orignally here unless
                 # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`. 
-                result = (extracted_patches * psf).sum((1, 2))
+                result = (extracted_patches * psf).sum((1, 2)) # b_fit
+                # Is it better to place patches and then multiply with the object array?
             elif self.interpolation_type == InterpolationTypes.BARYCENTRIC:
                 result = xp.zeros(len(self._probe_positions))
                 for index, position in enumerate(self._probe_positions):
@@ -279,15 +281,15 @@ class VSPIFluorescenceEnhancingAlgorithm:
     of the X-ray probe.
     """
 
-    def __init__(self, damping_factor: float = 0.0, max_iterations: int = 100) -> None:
-        """Initialize the VSPI algorithm.
+    # def __init__(self):#, damping_factor: float = 0.0, max_iterations: int = 100) -> None:
+    #     """Initialize the VSPI algorithm.
 
-        Args:
-            damping_factor: Damping parameter for LSMR solver (default: 0.0)
-            max_iterations: Maximum iterations for LSMR solver (default: 100)
-        """
-        self.damping_factor = damping_factor
-        self.max_iterations = max_iterations
+    #     Args:
+    #         damping_factor: Damping parameter for LSMR solver (default: 0.0)
+    #         max_iterations: Maximum iterations for LSMR solver (default: 100)
+    #     """
+    #     self.damping_factor = damping_factor
+    #     self.max_iterations = max_iterations
 
     @timer()
     def enhance(
@@ -296,7 +298,6 @@ class VSPIFluorescenceEnhancingAlgorithm:
         product: Product,
         valid_pixel_index: Optional[list[int]] = None,
         select_maps: Optional[list[str]] = None,
-        use_gpu: bool = False,
         settings: Optional[DeconvolutionEnhancementSettings] = None,
     ) -> FluorescenceDataset:
         """Enhance fluorescence dataset using ptychography product.
@@ -306,14 +307,16 @@ class VSPIFluorescenceEnhancingAlgorithm:
             product: Ptychography reconstruction product
             valid_pixel_index: Optional indices of valid scan positions
             select_maps: Optional list of element names to enhance (all if None)
-            use_gpu: If True, use GPU via cupyx for lsmr and array operations
 
         Returns:
             Enhanced fluorescence dataset with higher resolution
         """
         if settings is None:
             settings = DeconvolutionEnhancementSettings()
-        if use_gpu:
+        if settings.gpu.enabled:
+            # use specified device
+            cp.cuda.Device(settings.gpu.index).use()
+
             from cupyx.scipy.sparse.linalg import lsmr, LinearOperator
             xp = cp
             # Move probe and object_array to GPU; probe_positions stays on CPU
@@ -323,7 +326,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
             gpu_product = Product(
                 probe_positions=product.probe_positions,
                 probe=cp.asarray(product.probe),
-                object_array=cp.asarray(product.object_array),
+                object_array=product.object_array,
                 pixel_size_m=product.pixel_size_m,
                 object_center_m=product.object_center_m,
             )
@@ -344,9 +347,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
         else:
             selected_element_maps = dataset.element_maps
 
-        for emap in selected_element_maps:
-            # if select_maps is not None and emap.name not in select_maps:
-            #     continue
+        for emap in tqdm.tqdm(selected_element_maps):
 
             logger.info(f'Enhancing "{emap.name}"...')
             tic = time.perf_counter()
@@ -356,29 +357,30 @@ class VSPIFluorescenceEnhancingAlgorithm:
             if valid_pixel_index is not None:
                 m_cps = m_cps[valid_pixel_index]
 
-            if use_gpu:
+            if settings.gpu.enabled:
                 m_cps = cp.asarray(m_cps)
 
             # Solve the linear system A * e_cps = m_cps
-            inline_timer = InlineTimer("lsmr")
+            inline_timer = InlineTimer(settings.solver)
             inline_timer.start()
-            result = lsmr(
-                A, # size --> number of probe positions x number of pixels in ptycho object (30777 x 153908)
-                m_cps, # size --> number of counts per second measurements (3077)
-                damp=self.damping_factor,
-                maxiter=self.max_iterations,
-                # show=True,
-            )
+            if settings.solver == SolverTypes.LSMR: 
+                result = lsmr(
+                    A,
+                    m_cps,
+                    damp=settings.lsmr.damping_factor,
+                    maxiter=settings.lsmr.max_iter,
+                    atol=settings.lsmr.atol,
+                    btol=settings.lsmr.btol,
+                )
             inline_timer.end()
-            # The way that this is defined implies that m_cps should be equal to the number of probe positions.
-            # But how do you get the XRF data to be the correct size?
 
-            logger.debug(f"LSMR result: {result}")
+            logger.debug(f"Result: {result}")
+            logger.debug(f"Number of iterations: {result[2]}")
 
             # Reshape to object dimensions
             e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
             e_cps = result[0]
-            if use_gpu:
+            if settings.gpu.enabled:
                 inline_timer = InlineTimer("Move upscaled counts GPU->CPU")
                 inline_timer.start()
                 e_cps = cp.asnumpy(e_cps)
@@ -397,7 +399,19 @@ class VSPIFluorescenceEnhancingAlgorithm:
             enhanced_maps.append(emap_enhanced)
 
         return FluorescenceDataset(
-            element_maps=enhanced_maps,
-            # counts_per_second_path=dataset.counts_per_second_path,
-            # channel_names_path=dataset.channel_names_path,
+            element_maps=enhanced_maps
         )
+
+    # @timer()
+    # def _solve(self):
+    #     if settings.solver == SolverTypes.LSMR: 
+    #         inline_timer = InlineTimer(settings.solver)
+    #         inline_timer.start()
+    #         result = lsmr(
+    #             A,
+    #             m_cps,
+    #             damp=self.damping_factor,
+    #             maxiter=self.max_iterations,
+    #         )
+    #         inline_timer.end()
+

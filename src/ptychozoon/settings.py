@@ -1,15 +1,41 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum, auto
 
 
 class InterpolationTypes(StrEnum):
-    FOURIER = auto()
-    BARYCENTRIC = auto()
+    FOURIER = auto()  # only works on GPU
+    BARYCENTRIC = auto()  # works on CPU and GPU, but slow
+
+
+class SolverTypes(StrEnum):
+    LSMR = auto()
+    MINRES = auto()
+
+@dataclass
+class LSMRSettings:
+    damping_factor: float = 0.0
+    "Damping factor for regularized least-squares"
+
+    max_iter: int = 10
+
+    atol: float = 1e-6
+
+    btol: float = 1e-6
+
+
+@dataclass
+class GPUSettings:
+    enabled: bool = True
+
+    index: int = 0
 
 
 @dataclass
 class DeconvolutionEnhancementSettings:
+    solver: SolverTypes = SolverTypes.LSMR
 
-    use_gpu: bool = True
+    lsmr: LSMRSettings = field(default_factory=LSMRSettings)
 
     interpolation: InterpolationTypes = InterpolationTypes.FOURIER
+
+    gpu: GPUSettings = field(default_factory=GPUSettings)
