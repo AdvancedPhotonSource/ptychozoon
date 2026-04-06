@@ -16,7 +16,11 @@ import cupy as cp
 
 from chronos.timer_utils import timer, InlineTimer
 
-from ptychozoon.settings import DeconvolutionEnhancementSettings, InterpolationTypes, SolverTypes
+from ptychozoon.settings import (
+    DeconvolutionEnhancementSettings,
+    InterpolationTypes,
+    SolverTypes,
+)
 from .patches import extract_patches_fourier_shift, place_patches_fourier_shift
 
 logger = logging.getLogger(__name__)
@@ -43,17 +47,18 @@ class Product:
 
     All arrays are stored as numpy arrays:
     - probe_positions: (N, 2) array of [y, x] coordinates in meters
-    - probe: (modes, height, width) complex array
+    - probe: (n_opr, modes, height, width) complex array
     - object_array: (height, width) complex array
     - pixel_size_m: (y, x) pixel sizes in meters
     - object_center_m: (y, x) center coordinates in meters
     """
 
     probe_positions: np.ndarray  # (N, 2) float array [y, x] in meters
-    probe: np.ndarray  # (modes, height, width) complex array
+    probe: np.ndarray  # (n_opr, modes, height, width) complex array
     object_array: np.ndarray  # (height, width) complex array
     pixel_size_m: tuple[float, float]  # (pixel_height_m, pixel_width_m)
     object_center_m: tuple[float, float]  # (center_y_m, center_x_m)
+    opr_mode_weights: Optional[np.ndarray] = None # n_opr, N
 
 
 class ArrayPatchInterpolator:
@@ -64,7 +69,7 @@ class ArrayPatchInterpolator:
         array: np.ndarray,
         center_y_px: float,
         center_x_px: float,
-        shape: tuple[int, int]
+        shape: tuple[int, int],
     ) -> None:
         """Initialize interpolator for a patch centered at (center_y_px, center_x_px).
 
@@ -121,7 +126,9 @@ class ArrayPatchInterpolator:
         self._support[1:, 1:] += self._weight11 * patch
 
 
-def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: DeconvolutionEnhancementSettings):
+def _make_vspi_linear_operator(
+    product: Product, xp, LinearOperator, settings: DeconvolutionEnhancementSettings
+):
     """Factory that creates a VSPILinearOperator bound to the given array module and base class.
 
     Args:
@@ -151,7 +158,9 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
         @timer()
         def __init__(self, interpolation_type: InterpolationTypes) -> None:
             M = len(product.probe_positions)  # Number of scan points
-            N = product.object_array.shape[0] * product.object_array.shape[1]  # Total pixels
+            N = (
+                product.object_array.shape[0] * product.object_array.shape[1]
+            )  # Total pixels
             super().__init__(float, (M, N))
 
             self.interpolation_type = interpolation_type
@@ -166,9 +175,13 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
             self._center_y_m = product.object_center_m[0]
             self._center_x_m = product.object_center_m[1]
             self._object_array = product.object_array * 0
+            self._opr_mode_weights = product.opr_mode_weights
+            self._call_count = 0
 
         # @timer()
-        def _probe_to_object_coords(self, probe_y_m: float, probe_x_m: float) -> tuple[float, float]:
+        def _probe_to_object_coords(
+            self, probe_y_m: float, probe_x_m: float
+        ) -> tuple[float, float]:
             """Convert probe coordinates (meters) to object pixel coordinates.
 
             Args:
@@ -196,36 +209,66 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
             Returns:
                 Result vector (M,)
             """
+            # gets the convolved image
+
             # input v is the upscaled XRF array after flattening
             object_array = v.reshape((self._object_height_px, self._object_width_px))
             result = xp.zeros(len(self._probe_positions))
 
             # Get probe intensity (sum over modes)
-            probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
+            if self._opr_mode_weights is not None:
+                probe_intensity = _get_probe_intensity_at_each_position(self._probe, self._opr_mode_weights)
+            else:
+                probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
             psf = probe_intensity / probe_intensity.sum()
+
 
             inline_timer = InlineTimer("Extract patches")
             inline_timer.start()
             if self.interpolation_type == InterpolationTypes.FOURIER:
                 # convert probe positions to object coordinates
-                positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
+                positions_px = xp.array(
+                    [
+                        self._probe_to_object_coords(pos_m[0], pos_m[1])
+                        for pos_m in self._probe_positions
+                    ]
+                )
                 positions_px += -xp.array([1, 1]) * 0.5
-                extracted_patches = extract_patches_fourier_shift(object_array, positions_px, psf.shape)
+                extracted_patches = extract_patches_fourier_shift(
+                    object_array, positions_px, psf.shape
+                )
                 # The extracted patches do not match the barycentric interpolation that was orignally here unless
-                # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`. 
-                result = (extracted_patches * psf).sum((1, 2)) # b_fit
+                # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`.
+                result = (extracted_patches * psf).sum((1, 2))  # b_fit
                 # Is it better to place patches and then multiply with the object array?
             elif self.interpolation_type == InterpolationTypes.BARYCENTRIC:
                 result = xp.zeros(len(self._probe_positions))
                 for index, position in enumerate(self._probe_positions):
                     # Convert probe position to object coordinates
                     probe_y_m, probe_x_m = float(position[0]), float(position[1])
-                    obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+                    obj_y_px, obj_x_px = self._probe_to_object_coords(
+                        probe_y_m, probe_x_m
+                    )
 
                     # Extract and accumulate patch
-                    interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+                    interpolator = ArrayPatchInterpolator(
+                        object_array, obj_y_px, obj_x_px, psf.shape
+                    )
                     result[index] = xp.sum(psf * interpolator.get_patch())
             inline_timer.end()
+
+            # inline_timer = InlineTimer("Print norm")
+            # inline_timer.start()
+            self._call_count += 1
+            if self._call_count // 100 - self._call_count / 100 == 0:
+                print(self._call_count)
+            # residual_norm = float(cp.linalg.norm(b - result if x.shape == b.shape else b))
+            # logger.debug(
+            #     f"Iteration ~{self._call_count:4d} | "
+            #     f"matvec call | "
+            #     f"||result||={float(cp.linalg.norm(result)):.6e}"
+            # )
+            # inline_timer.end()
 
             return result
 
@@ -239,16 +282,27 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
             Returns:
                 Flattened object array (N,)
             """
+            # gets the deconvolved image
+
             object_array = xp.zeros((self._object_height_px, self._object_width_px))
+            # print("rmat")
 
             # Get probe intensity (sum over modes)
-            probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
+            if self._opr_mode_weights is not None:
+                probe_intensity = _get_probe_intensity_at_each_position(self._probe, self._opr_mode_weights)
+            else:
+                probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
             psf = probe_intensity / probe_intensity.sum()
 
             inline_timer = InlineTimer("Accumulate patches")
             inline_timer.start()
             if self.interpolation_type == InterpolationTypes.FOURIER:
-                positions_px = xp.array([self._probe_to_object_coords(pos_m[0], pos_m[1]) for pos_m in self._probe_positions])
+                positions_px = xp.array(
+                    [
+                        self._probe_to_object_coords(pos_m[0], pos_m[1])
+                        for pos_m in self._probe_positions
+                    ]
+                )
                 positions_px += -xp.array([1, 1]) * 0.5
                 object_array = place_patches_fourier_shift(
                     object_array,
@@ -261,13 +315,18 @@ def _make_vspi_linear_operator(product: Product, xp, LinearOperator, settings: D
                 for index, position in enumerate(self._probe_positions):
                     # Convert probe position to object coordinates
                     probe_y_m, probe_x_m = float(position[0]), float(position[1])
-                    obj_y_px, obj_x_px = self._probe_to_object_coords(probe_y_m, probe_x_m)
+                    obj_y_px, obj_x_px = self._probe_to_object_coords(
+                        probe_y_m, probe_x_m
+                    )
 
                     # Accumulate weighted patch
-                    interpolator = ArrayPatchInterpolator(object_array, obj_y_px, obj_x_px, psf.shape)
+                    interpolator = ArrayPatchInterpolator(
+                        object_array, obj_y_px, obj_x_px, psf.shape
+                    )
                     interpolator.accumulate_patch(u[index] * psf)
             inline_timer.end()
 
+            # import matplotlib.pyplot as plt; plt.imshow(object_array.get());plt.colorbar();plt.title("deconvolved?");plt.show()
             return object_array.flatten()
 
     return VSPILinearOperator(interpolation_type=settings.interpolation)
@@ -280,16 +339,6 @@ class VSPIFluorescenceEnhancingAlgorithm:
     measurements by solving a linear system that accounts for the finite size
     of the X-ray probe.
     """
-
-    # def __init__(self):#, damping_factor: float = 0.0, max_iterations: int = 100) -> None:
-    #     """Initialize the VSPI algorithm.
-
-    #     Args:
-    #         damping_factor: Damping parameter for LSMR solver (default: 0.0)
-    #         max_iterations: Maximum iterations for LSMR solver (default: 100)
-    #     """
-    #     self.damping_factor = damping_factor
-    #     self.max_iterations = max_iterations
 
     @timer()
     def enhance(
@@ -318,21 +367,28 @@ class VSPIFluorescenceEnhancingAlgorithm:
             cp.cuda.Device(settings.gpu.index).use()
 
             from cupyx.scipy.sparse.linalg import lsmr, LinearOperator
+
             xp = cp
             # Move probe and object_array to GPU; probe_positions stays on CPU
             # for efficient Python-level iteration over scan positions
             inline_timer = InlineTimer("Move data to GPU")
             inline_timer.start()
+            if product.opr_mode_weights is not None:
+                opr_mode_weights = cp.asarray(product.opr_mode_weights)
+            else:
+                opr_mode_weights = None
             gpu_product = Product(
                 probe_positions=product.probe_positions,
                 probe=cp.asarray(product.probe),
                 object_array=product.object_array,
                 pixel_size_m=product.pixel_size_m,
                 object_center_m=product.object_center_m,
+                opr_mode_weights=opr_mode_weights,
             )
             inline_timer.end()
         else:
             from scipy.sparse.linalg import lsmr, LinearOperator
+
             xp = np
             gpu_product = product
 
@@ -341,14 +397,15 @@ class VSPIFluorescenceEnhancingAlgorithm:
         inline_timer.start()
         A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator, settings)
         inline_timer.end()
-        
+
         if select_maps is not None:
-            selected_element_maps = [emap for emap in dataset.element_maps if emap.name in select_maps]
+            selected_element_maps = [
+                emap for emap in dataset.element_maps if emap.name in select_maps
+            ]
         else:
             selected_element_maps = dataset.element_maps
 
         for emap in tqdm.tqdm(selected_element_maps):
-
             logger.info(f'Enhancing "{emap.name}"...')
             tic = time.perf_counter()
 
@@ -363,7 +420,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
             # Solve the linear system A * e_cps = m_cps
             inline_timer = InlineTimer(settings.solver)
             inline_timer.start()
-            if settings.solver == SolverTypes.LSMR: 
+            if settings.solver == SolverTypes.LSMR:
                 result = lsmr(
                     A,
                     m_cps,
@@ -376,6 +433,9 @@ class VSPIFluorescenceEnhancingAlgorithm:
 
             logger.debug(f"Result: {result}")
             logger.debug(f"Number of iterations: {result[2]}")
+            logger.debug(f"norm(b-Ax): {result[3]}")
+            logger.debug(f"norm(A^H (b - Ax)): {result[4]}")
+            logger.debug(f"norm(A)): {result[5]}")
 
             # Reshape to object dimensions
             e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
@@ -398,20 +458,25 @@ class VSPIFluorescenceEnhancingAlgorithm:
 
             enhanced_maps.append(emap_enhanced)
 
-        return FluorescenceDataset(
-            element_maps=enhanced_maps
-        )
+        # also return convolve-fit for comparison
+        if settings.gpu.enabled:
+            convolve_fit = A._matvec(cp.asarray(e_cps.flatten()))
+        else:
+            convolve_fit = A._matvec(e_cps.flatten())
 
-    # @timer()
-    # def _solve(self):
-    #     if settings.solver == SolverTypes.LSMR: 
-    #         inline_timer = InlineTimer(settings.solver)
-    #         inline_timer.start()
-    #         result = lsmr(
-    #             A,
-    #             m_cps,
-    #             damp=self.damping_factor,
-    #             maxiter=self.max_iterations,
-    #         )
-    #         inline_timer.end()
+        return FluorescenceDataset(element_maps=enhanced_maps), convolve_fit
 
+
+def _get_probe_intensity_at_each_position(
+    probe: np.ndarray, opr_mode_weights: np.ndarray
+) -> np.ndarray:
+    # - probe: (n_opr, modes, height, width) complex array
+    # - opr_mode_weights: (n_opr, N)
+    xp = cp.get_array_module(probe)
+    p = xp.zeros((opr_mode_weights.shape[1], *probe.shape[2:]), dtype=xp.complex128)
+    print(p.shape)
+    for i in tqdm.tqdm(range(len(opr_mode_weights))):
+        p += probe[i, 0][None] * opr_mode_weights[i][:, None, None]
+    p = np.abs(p) ** 2  # convert to intensity
+    p += (np.abs(probe[0, 1:]) ** 2).sum(0)  # add intensity of other incoherent modes
+    return p

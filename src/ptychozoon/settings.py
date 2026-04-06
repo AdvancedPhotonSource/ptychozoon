@@ -9,7 +9,6 @@ class InterpolationTypes(StrEnum):
 
 class SolverTypes(StrEnum):
     LSMR = auto()
-    MINRES = auto()
 
 @dataclass
 class LSMRSettings:
