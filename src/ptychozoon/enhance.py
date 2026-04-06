@@ -58,7 +58,7 @@ class Product:
     object_array: np.ndarray  # (height, width) complex array
     pixel_size_m: tuple[float, float]  # (pixel_height_m, pixel_width_m)
     object_center_m: tuple[float, float]  # (center_y_m, center_x_m)
-    opr_mode_weights: Optional[np.ndarray] = None # n_opr, N
+    opr_mode_weights: Optional[np.ndarray] = None  # n_opr, N
 
 
 class ArrayPatchInterpolator:
@@ -217,11 +217,15 @@ def _make_vspi_linear_operator(
 
             # Get probe intensity (sum over modes)
             if self._opr_mode_weights is not None:
-                probe_intensity = _get_probe_intensity_at_each_position(self._probe, self._opr_mode_weights)
+                probe_intensity = _get_probe_intensity_at_each_position(
+                    self._probe, self._opr_mode_weights
+                )
+                patch_size = probe_intensity.shape[1:]
+                psf = probe_intensity / probe_intensity.sum((1, 2))[:, None, None]
             else:
                 probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
-            psf = probe_intensity / probe_intensity.sum()
-
+                patch_size = probe_intensity.shape
+                psf = probe_intensity / probe_intensity.sum()
 
             inline_timer = InlineTimer("Extract patches")
             inline_timer.start()
@@ -235,7 +239,7 @@ def _make_vspi_linear_operator(
                 )
                 positions_px += -xp.array([1, 1]) * 0.5
                 extracted_patches = extract_patches_fourier_shift(
-                    object_array, positions_px, psf.shape
+                    object_array, positions_px, patch_size
                 )
                 # The extracted patches do not match the barycentric interpolation that was orignally here unless
                 # `positions_px` is replaced `positions_px - xp.array([1, 1]) * 0.5`.
@@ -257,19 +261,6 @@ def _make_vspi_linear_operator(
                     result[index] = xp.sum(psf * interpolator.get_patch())
             inline_timer.end()
 
-            # inline_timer = InlineTimer("Print norm")
-            # inline_timer.start()
-            self._call_count += 1
-            if self._call_count // 100 - self._call_count / 100 == 0:
-                print(self._call_count)
-            # residual_norm = float(cp.linalg.norm(b - result if x.shape == b.shape else b))
-            # logger.debug(
-            #     f"Iteration ~{self._call_count:4d} | "
-            #     f"matvec call | "
-            #     f"||result||={float(cp.linalg.norm(result)):.6e}"
-            # )
-            # inline_timer.end()
-
             return result
 
         @timer()
@@ -283,16 +274,17 @@ def _make_vspi_linear_operator(
                 Flattened object array (N,)
             """
             # gets the deconvolved image
-
             object_array = xp.zeros((self._object_height_px, self._object_width_px))
-            # print("rmat")
 
             # Get probe intensity (sum over modes)
             if self._opr_mode_weights is not None:
-                probe_intensity = _get_probe_intensity_at_each_position(self._probe, self._opr_mode_weights)
+                probe_intensity = _get_probe_intensity_at_each_position(
+                    self._probe, self._opr_mode_weights
+                )
+                psf = probe_intensity / probe_intensity.sum((1, 2))[:, None, None]
             else:
                 probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
-            psf = probe_intensity / probe_intensity.sum()
+                psf = probe_intensity / probe_intensity.sum()
 
             inline_timer = InlineTimer("Accumulate patches")
             inline_timer.start()
@@ -474,8 +466,7 @@ def _get_probe_intensity_at_each_position(
     # - opr_mode_weights: (n_opr, N)
     xp = cp.get_array_module(probe)
     p = xp.zeros((opr_mode_weights.shape[1], *probe.shape[2:]), dtype=xp.complex128)
-    print(p.shape)
-    for i in tqdm.tqdm(range(len(opr_mode_weights))):
+    for i in range(len(opr_mode_weights)):
         p += probe[i, 0][None] * opr_mode_weights[i][:, None, None]
     p = np.abs(p) ** 2  # convert to intensity
     p += (np.abs(probe[0, 1:]) ** 2).sum(0)  # add intensity of other incoherent modes
