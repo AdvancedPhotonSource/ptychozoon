@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
+from typing import Optional
 
 
 class InterpolationTypes(StrEnum):
@@ -20,6 +21,9 @@ class LSMRSettings:
     atol: float = 1e-6
 
     btol: float = 1e-6
+
+    checkpoint_interval: Optional[int] = None
+    "Yield the solution every this many iterations. If None, only yield the final result."
 
 
 @dataclass

@@ -6,7 +6,7 @@ fluorescence data using ptychography reconstructions.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Generator, Optional, Sequence
 import logging
 import time
 import tqdm
@@ -332,7 +332,6 @@ class VSPIFluorescenceEnhancingAlgorithm:
     of the X-ray probe.
     """
 
-    @timer()
     def enhance(
         self,
         dataset: FluorescenceDataset,
@@ -340,17 +339,22 @@ class VSPIFluorescenceEnhancingAlgorithm:
         valid_pixel_index: Optional[list[int]] = None,
         select_maps: Optional[list[str]] = None,
         settings: Optional[DeconvolutionEnhancementSettings] = None,
-    ) -> FluorescenceDataset:
+    ) -> Generator[tuple[FluorescenceDataset, int]]:
         """Enhance fluorescence dataset using ptychography product.
+
+        This is a generator that yields ``(FluorescenceDataset, convolve_fit, iteration)``
+        tuples. If ``settings.lsmr.checkpoint_interval`` is set, it yields after every
+        N iterations (e.g. 5, 10, 15, …); otherwise it yields once after all iterations.
 
         Args:
             dataset: Input fluorescence dataset
             product: Ptychography reconstruction product
             valid_pixel_index: Optional indices of valid scan positions
             select_maps: Optional list of element names to enhance (all if None)
+            settings: Algorithm settings; uses defaults if None
 
-        Returns:
-            Enhanced fluorescence dataset with higher resolution
+        Yields:
+            (FluorescenceDataset, iteration) at each checkpoint
         """
         if settings is None:
             settings = DeconvolutionEnhancementSettings()
@@ -384,7 +388,6 @@ class VSPIFluorescenceEnhancingAlgorithm:
             xp = np
             gpu_product = product
 
-        enhanced_maps: list[ElementMap] = []
         inline_timer = InlineTimer("Make VSPI linear operator")
         inline_timer.start()
         A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator, settings)
@@ -397,66 +400,91 @@ class VSPIFluorescenceEnhancingAlgorithm:
         else:
             selected_element_maps = dataset.element_maps
 
-        for emap in tqdm.tqdm(selected_element_maps):
-            logger.info(f'Enhancing "{emap.name}"...')
-            tic = time.perf_counter()
+        e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
 
-            # Flatten the measured counts per second
+        # Pre-flatten and move all element maps to GPU once
+        m_cps_all = {}
+        for emap in selected_element_maps:
             m_cps = emap.counts_per_second.flatten()
             if valid_pixel_index is not None:
                 m_cps = m_cps[valid_pixel_index]
-
             if settings.gpu.enabled:
                 m_cps = cp.asarray(m_cps)
+            m_cps_all[emap.name] = m_cps
 
-            # Solve the linear system A * e_cps = m_cps
-            inline_timer = InlineTimer(settings.solver)
-            inline_timer.start()
-            if settings.solver == SolverTypes.LSMR:
-                result = lsmr(
-                    A,
-                    m_cps,
-                    damp=settings.lsmr.damping_factor,
-                    maxiter=settings.lsmr.max_iter,
-                    atol=settings.lsmr.atol,
-                    btol=settings.lsmr.btol,
-                )
-            inline_timer.end()
+        # Warm-start solutions (None = start from zero)
+        x0s: dict[str, Optional[np.ndarray]] = {
+            emap.name: None for emap in selected_element_maps
+        }
 
-            logger.debug(f"Result: {result}")
-            logger.debug(f"Number of iterations: {result[2]}")
-            logger.debug(f"norm(b-Ax): {result[3]}")
-            logger.debug(f"norm(A^H (b - Ax)): {result[4]}")
-            logger.debug(f"norm(A)): {result[5]}")
-
-            # Reshape to object dimensions
-            e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
-            e_cps = result[0]
-            if settings.gpu.enabled:
-                inline_timer = InlineTimer("Move upscaled counts GPU->CPU")
-                inline_timer.start()
-                e_cps = cp.asnumpy(e_cps)
-                inline_timer.end()
-            inline_timer = InlineTimer("Reshape upscaled counts")
-            inline_timer.start()
-            e_cps = e_cps.reshape(e_cps_shape)
-            inline_timer.end()
-
-            # Create enhanced element map
-            emap_enhanced = ElementMap(emap.name, e_cps)
-
-            toc = time.perf_counter()
-            logger.info(f'Enhanced "{emap.name}" in {toc - tic:.4f} seconds.')
-
-            enhanced_maps.append(emap_enhanced)
-
-        # also return convolve-fit for comparison
-        if settings.gpu.enabled:
-            convolve_fit = A._matvec(cp.asarray(e_cps.flatten()))
+        # Build chunk schedule: [chunk_size, chunk_size, ..., remainder]
+        max_iter = settings.lsmr.max_iter
+        checkpoint_interval = settings.lsmr.checkpoint_interval
+        if checkpoint_interval is None:
+            chunks = [max_iter]
         else:
-            convolve_fit = A._matvec(e_cps.flatten())
+            chunks = [checkpoint_interval] * (max_iter // checkpoint_interval)
+            if max_iter % checkpoint_interval:
+                chunks.append(max_iter % checkpoint_interval)
 
-        return FluorescenceDataset(element_maps=enhanced_maps), convolve_fit
+        iterations_done = 0
+        for chunk in chunks:
+            enhanced_maps: list[ElementMap] = []
+            e_cps = None
+
+            for emap in tqdm.tqdm(selected_element_maps):
+                logger.info(
+                    f'Enhancing "{emap.name}" '
+                    f"(iters {iterations_done + 1}–{iterations_done + chunk})..."
+                )
+                tic = time.perf_counter()
+
+                # Solve the linear system A * e_cps = m_cps
+                inline_timer = InlineTimer(settings.solver)
+                inline_timer.start()
+                if settings.solver == SolverTypes.LSMR:
+                    result = lsmr(
+                        A,
+                        m_cps_all[emap.name],
+                        damp=settings.lsmr.damping_factor,
+                        maxiter=chunk,
+                        atol=settings.lsmr.atol,
+                        btol=settings.lsmr.btol,
+                        x0=x0s[emap.name],
+                    )
+                inline_timer.end()
+
+                logger.debug(f"Result: {result}")
+                logger.debug(f"Number of iterations: {result[2]}")
+                logger.debug(f"norm(b-Ax): {result[3]}")
+                logger.debug(f"norm(A^H (b - Ax)): {result[4]}")
+                logger.debug(f"norm(A)): {result[5]}")
+
+                # Save solution as warm start for next chunk
+                x0s[emap.name] = result[0]
+
+                e_cps = result[0]
+                if settings.gpu.enabled:
+                    inline_timer = InlineTimer("Move upscaled counts GPU->CPU")
+                    inline_timer.start()
+                    e_cps = cp.asnumpy(e_cps)
+                    inline_timer.end()
+                e_cps = e_cps.reshape(e_cps_shape)
+
+                toc = time.perf_counter()
+                logger.info(f'Enhanced "{emap.name}" in {toc - tic:.4f} seconds.')
+
+                enhanced_maps.append(ElementMap(emap.name, e_cps))
+
+            iterations_done += chunk
+
+            # # Convolve-fit uses the last element map's solution for comparison
+            # if settings.gpu.enabled:
+            #     convolve_fit = A._matvec(cp.asarray(e_cps.flatten()))
+            # else:
+            #     convolve_fit = A._matvec(e_cps.flatten())
+
+            yield FluorescenceDataset(element_maps=enhanced_maps), iterations_done
 
 
 def _get_probe_intensity_at_each_position(
