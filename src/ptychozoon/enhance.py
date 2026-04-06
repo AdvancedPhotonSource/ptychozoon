@@ -478,12 +478,6 @@ class VSPIFluorescenceEnhancingAlgorithm:
 
             iterations_done += chunk
 
-            # # Convolve-fit uses the last element map's solution for comparison
-            # if settings.gpu.enabled:
-            #     convolve_fit = A._matvec(cp.asarray(e_cps.flatten()))
-            # else:
-            #     convolve_fit = A._matvec(e_cps.flatten())
-
             yield FluorescenceDataset(element_maps=enhanced_maps), iterations_done
 
 
