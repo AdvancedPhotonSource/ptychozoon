@@ -3,6 +3,11 @@ from enum import StrEnum, auto
 from typing import Optional
 
 
+class SaveFileExtensions(StrEnum):
+    H5 = ".h5"
+    TIFF = ".tiff"
+
+
 class InterpolationTypes(StrEnum):
     FOURIER = auto()  # only works on GPU
     BARYCENTRIC = auto()  # works on CPU and GPU, but slow
@@ -10,6 +15,7 @@ class InterpolationTypes(StrEnum):
 
 class SolverTypes(StrEnum):
     LSMR = auto()
+
 
 @dataclass
 class LSMRSettings:
