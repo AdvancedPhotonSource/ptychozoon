@@ -428,11 +428,11 @@ class VSPIFluorescenceEnhancingAlgorithm:
                 chunks.append(max_iter % checkpoint_interval)
 
         iterations_done = 0
-        for chunk in chunks:
+        for chunk in tqdm.tqdm(chunks):
             enhanced_maps: list[ElementMap] = []
             e_cps = None
 
-            for emap in tqdm.tqdm(selected_element_maps):
+            for emap in selected_element_maps:
                 logger.info(
                     f'Enhancing "{emap.name}" '
                     f"(iters {iterations_done + 1}–{iterations_done + chunk})..."
