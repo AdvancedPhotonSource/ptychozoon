@@ -36,21 +36,22 @@ class ElementMap:
 
 @dataclass(frozen=True)
 class FluorescenceDataset:
-    """Collection of element maps with metadata."""
+    """Collection of element maps"""
 
     element_maps: Sequence[ElementMap]
 
 
 @dataclass(frozen=True)
-class Product:
+class PtychographyProduct:
     """Ptychography reconstruction product.
 
-    All arrays are stored as numpy arrays:
-    - probe_positions: (N, 2) array of [y, x] coordinates in meters
-    - probe: (n_opr, modes, height, width) complex array
-    - object_array: (height, width) complex array
-    - pixel_size_m: (y, x) pixel sizes in meters
-    - object_center_m: (y, x) center coordinates in meters
+    Attributes:
+        probe_positions: ``(N, 2)`` float array of ``[y, x]`` scan coordinates in meters.
+        probe: ``(n_opr, modes, height, width)`` complex probe array.
+        object_array: ``(height, width)`` complex object array.
+        pixel_size_m: ``(pixel_height_m, pixel_width_m)`` pixel sizes in meters.
+        object_center_m: ``(center_y_m, center_x_m)`` object center coordinates in meters.
+        opr_mode_weights: ``(n_opr, N)`` OPR mode weights; ``None`` if not used.
     """
 
     probe_positions: np.ndarray  # (N, 2) float array [y, x] in meters
@@ -108,7 +109,7 @@ class ArrayPatchInterpolator:
         # Extract patch support region from full object
         self._support = array[ymin_wh:ymax_wh, xmin_wh:xmax_wh]
 
-    # @timer()
+    # called very frequently; do not time
     def get_patch(self) -> np.ndarray:
         """Interpolate array support to extract patch."""
         patch = self._weight00 * self._support[:-1, :-1]
@@ -117,7 +118,7 @@ class ArrayPatchInterpolator:
         patch += self._weight11 * self._support[1:, 1:]
         return patch
 
-    # @timer()
+    # called very frequently; do not time
     def accumulate_patch(self, patch: np.ndarray) -> None:
         """Add patch update to array support."""
         self._support[:-1, :-1] += self._weight00 * patch
@@ -127,7 +128,7 @@ class ArrayPatchInterpolator:
 
 
 def _make_vspi_linear_operator(
-    product: Product, xp, LinearOperator, settings: DeconvolutionEnhancementSettings
+    product: PtychographyProduct, xp, LinearOperator, settings: DeconvolutionEnhancementSettings
 ):
     """Factory that creates a VSPILinearOperator bound to the given array module and base class.
 
@@ -141,13 +142,6 @@ def _make_vspi_linear_operator(
     """
 
     class VSPILinearOperator(LinearOperator):
-        # """Linear operator A for VSPI: A[M,N] * X[N,P] = B[M,P]
-
-        # Where:
-        #     M: number of XRF positions (scan points)
-        #     N: number of ptychography object pixels
-        #     P: number of XRF channels
-        # """
         """Linear operator A for VSPI: A[M,N] * X[N] = B[M]
 
         Where:
@@ -223,7 +217,7 @@ def _make_vspi_linear_operator(
                 patch_size = probe_intensity.shape[1:]
                 psf = probe_intensity / probe_intensity.sum((1, 2))[:, None, None]
             else:
-                probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
+                probe_intensity = xp.sum(xp.abs(self._probe[0]) ** 2, axis=0)
                 patch_size = probe_intensity.shape
                 psf = probe_intensity / probe_intensity.sum()
 
@@ -283,7 +277,7 @@ def _make_vspi_linear_operator(
                 )
                 psf = probe_intensity / probe_intensity.sum((1, 2))[:, None, None]
             else:
-                probe_intensity = xp.sum(xp.abs(self._probe) ** 2, axis=0)
+                probe_intensity = xp.sum(xp.abs(self._probe[0]) ** 2, axis=0)
                 psf = probe_intensity / probe_intensity.sum()
 
             inline_timer = InlineTimer("Accumulate patches")
@@ -335,7 +329,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
     def enhance(
         self,
         dataset: FluorescenceDataset,
-        product: Product,
+        product: PtychographyProduct,
         valid_pixel_index: Optional[list[int]] = None,
         select_maps: Optional[list[str]] = None,
         settings: Optional[DeconvolutionEnhancementSettings] = None,
@@ -373,7 +367,7 @@ class VSPIFluorescenceEnhancingAlgorithm:
                 opr_mode_weights = cp.asarray(product.opr_mode_weights)
             else:
                 opr_mode_weights = None
-            gpu_product = Product(
+            gpu_product = PtychographyProduct(
                 probe_positions=product.probe_positions,
                 probe=cp.asarray(product.probe),
                 object_array=product.object_array,
