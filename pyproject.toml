@@ -18,11 +18,13 @@ dependencies = [
     "PyYAML",
     "tqdm",
     "cupy",
+    "chronos-profiler",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-qt = ["PyQt5", "matplotlib"]
+qt = ["PyQt5"]
 docs = ["sphinx>=7.0", "sphinx-rtd-theme>=2.0"]
 
 [project.scripts]

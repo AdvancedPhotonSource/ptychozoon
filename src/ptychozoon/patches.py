@@ -1,3 +1,5 @@
+# Copyright © 2026 UChicago Argonne, LLC All right reserved
+# Full license accessible at https://github.com/AdvancedPhotonSource/ptychozoon/blob/main/LICENSE.TXT
 from typing import Literal, Optional, Tuple, TypeVar, Union
 from types import ModuleType
 from chronos.timer_utils import timer, InlineTimer

@@ -1,3 +1,5 @@
+# Copyright © 2026 UChicago Argonne, LLC All right reserved
+# Full license accessible at https://github.com/AdvancedPhotonSource/ptychozoon/blob/main/LICENSE.TXT
 """Reader for MDA (Multi-Dimensional Array) files.
 
 MDA is a binary file format used at Argonne National Laboratory's synchrotron

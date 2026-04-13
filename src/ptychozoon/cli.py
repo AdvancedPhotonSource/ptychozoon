@@ -1,3 +1,5 @@
+# Copyright © 2026 UChicago Argonne, LLC All right reserved
+# Full license accessible at https://github.com/AdvancedPhotonSource/ptychozoon/blob/main/LICENSE.TXT
 """Command-line entry points for ptychozoon."""
 
 from __future__ import annotations

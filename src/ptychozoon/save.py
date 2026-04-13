@@ -1,3 +1,5 @@
+# Copyright © 2026 UChicago Argonne, LLC All right reserved
+# Full license accessible at https://github.com/AdvancedPhotonSource/ptychozoon/blob/main/LICENSE.TXT
 """Functions for saving VSPI fluorescence enhancement results."""
 
 from __future__ import annotations

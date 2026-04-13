@@ -1,3 +1,5 @@
+# Copyright © 2026 UChicago Argonne, LLC All right reserved
+# Full license accessible at https://github.com/AdvancedPhotonSource/ptychozoon/blob/main/LICENSE.TXT
 # Configuration file for the Sphinx documentation builder.
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 

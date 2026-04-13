@@ -1,3 +1,5 @@
+# Copyright © 2026 UChicago Argonne, LLC All right reserved
+# Full license accessible at https://github.com/AdvancedPhotonSource/ptychozoon/blob/main/LICENSE.TXT
 """VSPI Fluorescence Enhancement Algorithm
 
 Re-implementation of the Virtual Single Pixel Imaging algorithm for enhancing
@@ -75,11 +77,10 @@ def _make_vspi_linear_operator(
             self._pixel_width_m = product.pixel_size_m[1]
             self._center_y_m = product.object_center_m[0]
             self._center_x_m = product.object_center_m[1]
-            self._object_array = product.object_array * 0
+            self._object_array = product.object_array
             self._opr_mode_weights = product.opr_mode_weights
             self._call_count = 0
 
-        # @timer()
         def _probe_to_object_coords(
             self, probe_y_m: float, probe_x_m: float
         ) -> tuple[float, float]:
