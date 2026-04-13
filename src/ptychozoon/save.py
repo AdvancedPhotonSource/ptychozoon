@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 import tifffile
 
-from ptychozoon.enhance import ElementMap, FluorescenceDataset
+from ptychozoon.data_structures import FluorescenceDataset, ElementMap
 from ptychozoon.settings import SaveFileExtensions
 
 

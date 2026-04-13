@@ -5,8 +5,7 @@ fluorescence data using ptychography reconstructions.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Generator, Optional, Sequence
+from typing import Generator, Optional
 import logging
 import time
 import tqdm
@@ -16,6 +15,12 @@ import cupy as cp
 
 from chronos.timer_utils import timer, InlineTimer
 
+from ptychozoon.data_structures import (
+    ElementMap,
+    FluorescenceDataset,
+    PtychographyProduct,
+)
+from ptychozoon.patches import BilinearArrayPatchInterpolator
 from ptychozoon.settings import (
     DeconvolutionEnhancementSettings,
     InterpolationTypes,
@@ -26,109 +31,11 @@ from .patches import extract_patches_fourier_shift, place_patches_fourier_shift
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ElementMap:
-    """2D spatial map of fluorescence signal for a single element in counts per second."""
-
-    name: str
-    counts_per_second: np.ndarray
-
-
-@dataclass(frozen=True)
-class FluorescenceDataset:
-    """Collection of element maps"""
-
-    element_maps: Sequence[ElementMap]
-
-
-@dataclass(frozen=True)
-class PtychographyProduct:
-    """Ptychography reconstruction product.
-
-    Attributes:
-        probe_positions: ``(N, 2)`` float array of ``[y, x]`` scan coordinates in meters.
-        probe: ``(n_opr, modes, height, width)`` complex probe array.
-        object_array: ``(height, width)`` complex object array.
-        pixel_size_m: ``(pixel_height_m, pixel_width_m)`` pixel sizes in meters.
-        object_center_m: ``(center_y_m, center_x_m)`` object center coordinates in meters.
-        opr_mode_weights: ``(n_opr, N)`` OPR mode weights; ``None`` if not used.
-    """
-
-    probe_positions: np.ndarray  # (N, 2) float array [y, x] in meters
-    probe: np.ndarray  # (n_opr, modes, height, width) complex array
-    object_array: np.ndarray  # (height, width) complex array
-    pixel_size_m: tuple[float, float]  # (pixel_height_m, pixel_width_m)
-    object_center_m: tuple[float, float]  # (center_y_m, center_x_m)
-    opr_mode_weights: Optional[np.ndarray] = None  # n_opr, N
-
-
-class ArrayPatchInterpolator:
-    """Bilinear interpolation for extracting and accumulating array patches."""
-
-    def __init__(
-        self,
-        array: np.ndarray,
-        center_y_px: float,
-        center_x_px: float,
-        shape: tuple[int, int],
-    ) -> None:
-        """Initialize interpolator for a patch centered at (center_y_px, center_x_px).
-
-        Args:
-            array: Full 2D array to extract patches from
-            center_y_px: Y-coordinate of patch center in pixels
-            center_x_px: X-coordinate of patch center in pixels
-            shape: (height, width) of the patch to extract
-        """
-        # Top left corner of patch support
-        xmin = center_x_px - shape[-1] / 2
-        ymin = center_y_px - shape[-2] / 2
-
-        # Whole components (pixel indexes)
-        xmin_wh = int(xmin)
-        ymin_wh = int(ymin)
-
-        # Fractional (subpixel) components
-        xmin_fr = xmin - xmin_wh
-        ymin_fr = ymin - ymin_wh
-
-        # Bottom right corner of patch support
-        xmax_wh = xmin_wh + shape[-1] + 1
-        ymax_wh = ymin_wh + shape[-2] + 1
-
-        # Reused quantities
-        xmin_fr_c = 1.0 - xmin_fr
-        ymin_fr_c = 1.0 - ymin_fr
-
-        # Barycentric interpolant weights
-        self._weight00 = ymin_fr_c * xmin_fr_c
-        self._weight01 = ymin_fr_c * xmin_fr
-        self._weight10 = ymin_fr * xmin_fr_c
-        self._weight11 = ymin_fr * xmin_fr
-
-        # Extract patch support region from full object
-        self._support = array[ymin_wh:ymax_wh, xmin_wh:xmax_wh]
-
-    # called very frequently; do not time
-    def get_patch(self) -> np.ndarray:
-        """Interpolate array support to extract patch."""
-        patch = self._weight00 * self._support[:-1, :-1]
-        patch += self._weight01 * self._support[:-1, 1:]
-        patch += self._weight10 * self._support[1:, :-1]
-        patch += self._weight11 * self._support[1:, 1:]
-        return patch
-
-    # called very frequently; do not time
-    def accumulate_patch(self, patch: np.ndarray) -> None:
-        """Add patch update to array support."""
-        self._support[:-1, :-1] += self._weight00 * patch
-        self._support[:-1, 1:] += self._weight01 * patch
-        self._support[1:, :-1] += self._weight10 * patch
-        self._support[1:, 1:] += self._weight11 * patch
-
-
 def _make_vspi_linear_operator(
-    product: PtychographyProduct, xp, LinearOperator, settings: DeconvolutionEnhancementSettings
+    product: PtychographyProduct,
+    xp,
+    LinearOperator,
+    settings: DeconvolutionEnhancementSettings,
 ):
     """Factory that creates a VSPILinearOperator bound to the given array module and base class.
 
@@ -249,7 +156,7 @@ def _make_vspi_linear_operator(
                     )
 
                     # Extract and accumulate patch
-                    interpolator = ArrayPatchInterpolator(
+                    interpolator = BilinearArrayPatchInterpolator(
                         object_array, obj_y_px, obj_x_px, psf.shape
                     )
                     result[index] = xp.sum(psf * interpolator.get_patch())
@@ -306,7 +213,7 @@ def _make_vspi_linear_operator(
                     )
 
                     # Accumulate weighted patch
-                    interpolator = ArrayPatchInterpolator(
+                    interpolator = BilinearArrayPatchInterpolator(
                         object_array, obj_y_px, obj_x_px, psf.shape
                     )
                     interpolator.accumulate_patch(u[index] * psf)

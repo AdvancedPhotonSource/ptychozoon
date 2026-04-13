@@ -33,7 +33,7 @@ except ImportError as e:
 
 import sys
 
-from ptychozoon.enhance import FluorescenceDataset
+from ptychozoon.data_structures import FluorescenceDataset
 
 
 class VSPIResultsViewer(QMainWindow):
