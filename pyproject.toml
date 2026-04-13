@@ -25,6 +25,9 @@ dev = ["pytest"]
 qt = ["PyQt5", "matplotlib"]
 docs = ["sphinx>=7.0", "sphinx-rtd-theme>=2.0"]
 
+[project.scripts]
+view-vspi = "ptychozoon.cli:view_vspi"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

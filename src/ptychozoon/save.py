@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 import tifffile
 
-from ptychozoon.enhance import FluorescenceDataset
+from ptychozoon.enhance import ElementMap, FluorescenceDataset
 from ptychozoon.settings import SaveFileExtensions
 
 
@@ -18,6 +18,7 @@ def save_vspi_results(
     name: str,
     vspi_results: List[Tuple[FluorescenceDataset, int]],
     filetype: SaveFileExtensions,
+    save_every_n_frames: int = 1,
 ) -> None:
     """Save VSPI results to disk.
 
@@ -31,7 +32,12 @@ def save_vspi_results(
             as returned by ``VSPIFluorescenceEnhancingAlgorithm.enhance``.
         filetype: Output format — ``SaveFileExtensions.TIFF`` or
             ``SaveFileExtensions.H5``.
+        save_every_n_frames: Stride for subsampling results before saving.
+            For example, ``2`` saves every other result. Defaults to ``1``
+            (save all results).
     """
+    vspi_results = vspi_results[::save_every_n_frames]
+    epochs = np.array([iteration for _, iteration in vspi_results])
     element_names = [em.name for em in vspi_results[0][0].element_maps]
 
     element_arrays: dict[str, np.ndarray] = {}
@@ -45,7 +51,7 @@ def save_vspi_results(
     if filetype == SaveFileExtensions.TIFF:
         _save_tiff(folder, name, element_arrays)
     elif filetype == SaveFileExtensions.H5:
-        _save_h5(folder, name, element_arrays)
+        _save_h5(folder, name, element_arrays, epochs)
     else:
         raise ValueError(f"Unsupported filetype: {filetype!r}")
 
@@ -70,11 +76,17 @@ def _save_tiff(folder: str, name: str, element_arrays: dict[str, np.ndarray]) ->
     print(f"Element arrays saved to {tiff_path}")
 
 
-def _save_h5(folder: str, name: str, element_arrays: dict[str, np.ndarray]) -> None:
+def _save_h5(
+    folder: str,
+    name: str,
+    element_arrays: dict[str, np.ndarray],
+    epochs: np.ndarray,
+) -> None:
     """Write per-element 3D image stacks to a single HDF5 file.
 
     Each element is stored as a separate dataset at the root level of the
-    file, with the dataset name equal to the element name.
+    file, with the dataset name equal to the element name. An ``epochs``
+    dataset records the iteration number corresponding to each frame.
 
     Parameters
     ----------
@@ -84,11 +96,46 @@ def _save_h5(folder: str, name: str, element_arrays: dict[str, np.ndarray]) -> N
         Name stem used in the output filename.
     element_arrays : dict[str, ndarray]
         Mapping from element name to a ``(n_frames, height, width)`` array.
+    epochs : ndarray
+        1-D array of iteration numbers, one per saved frame.
     """
     if not os.path.exists(folder):
         os.mkdir(os.path.dirname(folder))
     h5_path = os.path.join(folder, name + "_all_frames" + SaveFileExtensions.H5)
     with h5py.File(h5_path, "w") as f:
+        f.create_dataset("epochs", data=epochs)
         for element_name, array_3d in element_arrays.items():
             f.create_dataset(element_name, data=array_3d)
     print(f"Element arrays saved to {h5_path}")
+
+
+def load_vspi_results_h5(
+    h5_path: str,
+) -> List[Tuple[FluorescenceDataset, int]]:
+    """Load VSPI results from an HDF5 file saved by :func:`save_vspi_results`.
+
+    Parameters
+    ----------
+    h5_path : str
+        Path to the ``.h5`` file.
+
+    Returns
+    -------
+    List[Tuple[FluorescenceDataset, int]]
+        List of ``(FluorescenceDataset, iteration_number)`` tuples, one per
+        saved frame, in the same format as returned by
+        ``VSPIFluorescenceEnhancingAlgorithm.enhance``.
+    """
+    with h5py.File(h5_path, "r") as f:
+        epochs = f["epochs"][:]
+        element_names = [key for key in f.keys() if key != "epochs"]
+        arrays = {name: f[name][:] for name in element_names}
+
+    vspi_results = []
+    for i, epoch in enumerate(epochs):
+        element_maps = [
+            ElementMap(name=name, counts_per_second=arrays[name][i])
+            for name in element_names
+        ]
+        vspi_results.append((FluorescenceDataset(element_maps=element_maps), int(epoch)))
+    return vspi_results
