@@ -22,6 +22,27 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
+    "myst_nb",
+]
+
+# MyST-NB configuration
+nb_execution_mode = "off"  # Use pre-run notebook outputs; don't re-execute
+nb_render_image_options = {"align": "center"}
+nb_output_stderr = "show"
+nb_merge_streams = True
+
+nb_mime_priority_overrides = [
+    ('html', 'image/png', 10),
+    ('html', 'image/jpeg', 10),
+    ('html', 'image/svg+xml', 10),
+    ('html', 'text/html', 20),
+]
+
+myst_enable_extensions = [
+    "colon_fence",
+    "deflist",
+    "dollarmath",
+    "html_image",
 ]
 
 autosummary_generate = True

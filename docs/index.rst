@@ -11,6 +11,7 @@ ptychography reconstruction data.
 
    user_guide
    api
+   examples/index
 
 Indices and tables
 ==================
