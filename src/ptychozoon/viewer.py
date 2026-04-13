@@ -11,10 +11,13 @@ os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
 try:
     from PyQt5.QtWidgets import (
         QApplication,
+        QCheckBox,
         QComboBox,
+        QDoubleSpinBox,
         QHBoxLayout,
         QLabel,
         QMainWindow,
+        QPushButton,
         QSlider,
         QVBoxLayout,
         QWidget,
@@ -57,6 +60,20 @@ class VSPIResultsViewer(QMainWindow):
         self._combo = QComboBox()
         self._combo.addItems(self._element_names)
 
+        self._keep_clim_checkbox = QCheckBox("Keep colorscale constant")
+
+        self._clim_min = QDoubleSpinBox()
+        self._clim_min.setDecimals(4)
+        self._clim_min.setRange(-1e12, 1e12)
+        self._clim_min.setPrefix("min: ")
+
+        self._clim_max = QDoubleSpinBox()
+        self._clim_max.setDecimals(4)
+        self._clim_max.setRange(-1e12, 1e12)
+        self._clim_max.setPrefix("max: ")
+
+        self._autoset_btn = QPushButton("Autoset color limit")
+
         # --- matplotlib canvas: create image and colorbar once ---
         first_em = self._results[0][0].element_maps[0]
         self._fig = Figure(figsize=(8, 6), tight_layout=True)
@@ -74,8 +91,18 @@ class VSPIResultsViewer(QMainWindow):
         controls.addWidget(QLabel("Element:"))
         controls.addWidget(self._combo)
 
+        clim_controls = QHBoxLayout()
+        clim_controls.addWidget(self._keep_clim_checkbox)
+        clim_controls.addSpacing(20)
+        clim_controls.addWidget(self._clim_min)
+        clim_controls.addWidget(self._clim_max)
+        clim_controls.addSpacing(10)
+        clim_controls.addWidget(self._autoset_btn)
+        clim_controls.addStretch()
+
         root = QVBoxLayout()
         root.addLayout(controls)
+        root.addLayout(clim_controls)
         root.addWidget(self._canvas)
 
         container = QWidget()
@@ -85,6 +112,10 @@ class VSPIResultsViewer(QMainWindow):
         # --- signals ---
         self._slider.valueChanged.connect(self._update)
         self._combo.currentTextChanged.connect(self._update)
+        self._keep_clim_checkbox.stateChanged.connect(self._update)
+        self._clim_min.valueChanged.connect(self._apply_manual_clim)
+        self._clim_max.valueChanged.connect(self._apply_manual_clim)
+        self._autoset_btn.clicked.connect(self._autoset_clim)
 
         self._update()
 
@@ -98,8 +129,33 @@ class VSPIResultsViewer(QMainWindow):
 
         data = em.counts_per_second
         self._im.set_data(data)
-        self._im.set_clim(vmin=data.min(), vmax=data.max())
+
+        if not self._keep_clim_checkbox.isChecked():
+            vmin, vmax = float(data.min()), float(data.max())
+            self._set_clim_spinboxes(vmin, vmax)
+            self._im.set_clim(vmin=vmin, vmax=vmax)
+
         self._ax.set_title(f"{em.name} — iteration {iteration_num}")
+        self._canvas.draw_idle()
+
+    def _set_clim_spinboxes(self, vmin: float, vmax: float):
+        """Update spinbox values without triggering _apply_manual_clim."""
+        self._clim_min.blockSignals(True)
+        self._clim_max.blockSignals(True)
+        self._clim_min.setValue(vmin)
+        self._clim_max.setValue(vmax)
+        self._clim_min.blockSignals(False)
+        self._clim_max.blockSignals(False)
+
+    def _apply_manual_clim(self):
+        self._im.set_clim(vmin=self._clim_min.value(), vmax=self._clim_max.value())
+        self._canvas.draw_idle()
+
+    def _autoset_clim(self):
+        data = self._im.get_array()
+        vmin, vmax = float(data.min()), float(data.max())
+        self._set_clim_spinboxes(vmin, vmax)
+        self._im.set_clim(vmin=vmin, vmax=vmax)
         self._canvas.draw_idle()
 
 
