@@ -4,32 +4,26 @@ A Python package for ptychography processing.
 
 ## Installation
 
+It is recommended to install with qt dependencies:
+
+```bash
+pip install -e ".[qt]"
+```
+
+To install with no dependencies:
+
 ```bash
 pip install -e .
 ```
 
-For development:
+To install the package for development:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev, qt]"
 ```
 
 ## Usage
 
 ```python
 import ptychozoon
-```
-
-## Development
-
-To install in development mode with all dependencies:
-
-```bash
-pip install -e ".[dev]"
-```
-
-Run tests:
-
-```bash
-pytest
 ```

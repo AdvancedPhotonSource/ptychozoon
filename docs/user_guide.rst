@@ -10,18 +10,17 @@ Install the package and its core dependencies with pip:
 
    pip install ptychozoon
 
+To use the interactive :mod:`~ptychozoon.viewer` you also need PyQt5:
+
+.. code-block:: bash
+
+   pip install "ptychozoon[qt]"
+
 For development (includes pytest):
 
 .. code-block:: bash
 
    pip install "ptychozoon[dev]"
-
-To use the interactive :mod:`~ptychozoon.viewer` you also need PyQt5 and
-Matplotlib:
-
-.. code-block:: bash
-
-   pip install "ptychozoon[qt]"
 
 Quick Start
 -----------
@@ -29,14 +28,14 @@ Quick Start
 The typical workflow consists of three steps:
 
 1. **Load data** — read a ptychography reconstruction and a fluorescence dataset.
-2. **Run VSPI** — call :meth:`~ptychozoon.enhance.VSPIFluorescenceEnhancingAlgorithm.enhance`
+2. **Run VSPI** — call :meth:`~ptychozoon.vspi_enhance.VSPIFluorescenceEnhancingAlgorithm.enhance`
    to deconvolve the fluorescence maps.
 3. **Inspect / save results** — use the viewer or save to TIFF/HDF5.
 
 .. code-block:: python
 
    import numpy as np
-   from ptychozoon.enhance import (
+   from ptychozoon.vspi_enhance import (
        VSPIFluorescenceEnhancingAlgorithm,
        ElementMap,
        FluorescenceDataset,
