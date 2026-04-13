@@ -51,6 +51,17 @@ def save_vspi_results(
 
 
 def _save_tiff(folder: str, name: str, element_arrays: dict[str, np.ndarray]) -> None:
+    """Write per-element 3D image stacks to individual TIFF files.
+
+    Parameters
+    ----------
+    folder : str
+        Output directory (created if it does not exist).
+    name : str
+        Name prefix used in every output filename.
+    element_arrays : dict[str, ndarray]
+        Mapping from element name to a ``(n_frames, height, width)`` array.
+    """
     if not os.path.exists(folder):
         os.mkdir(os.path.dirname(folder))
     for element_name, array_3d in element_arrays.items():
@@ -60,6 +71,20 @@ def _save_tiff(folder: str, name: str, element_arrays: dict[str, np.ndarray]) ->
 
 
 def _save_h5(folder: str, name: str, element_arrays: dict[str, np.ndarray]) -> None:
+    """Write per-element 3D image stacks to a single HDF5 file.
+
+    Each element is stored as a separate dataset at the root level of the
+    file, with the dataset name equal to the element name.
+
+    Parameters
+    ----------
+    folder : str
+        Output directory (created if it does not exist).
+    name : str
+        Name stem used in the output filename.
+    element_arrays : dict[str, ndarray]
+        Mapping from element name to a ``(n_frames, height, width)`` array.
+    """
     if not os.path.exists(folder):
         os.mkdir(os.path.dirname(folder))
     h5_path = os.path.join(folder, name + "_all_frames" + SaveFileExtensions.H5)

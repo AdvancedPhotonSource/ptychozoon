@@ -120,6 +120,7 @@ class VSPIResultsViewer(QMainWindow):
         self._update()
 
     def _update(self):
+        """Refresh the displayed image based on the current slider and combo box values."""
         idx = self._slider.value()
         fluorescence_dataset, iteration_num = self._results[idx]
         self._slider_label.setText(str(iteration_num))
@@ -148,10 +149,12 @@ class VSPIResultsViewer(QMainWindow):
         self._clim_max.blockSignals(False)
 
     def _apply_manual_clim(self):
+        """Apply the color limits currently shown in the min/max spin boxes."""
         self._im.set_clim(vmin=self._clim_min.value(), vmax=self._clim_max.value())
         self._canvas.draw_idle()
 
     def _autoset_clim(self):
+        """Set color limits to the full data range of the currently displayed image."""
         data = self._im.get_array()
         vmin, vmax = float(data.min()), float(data.max())
         self._set_clim_spinboxes(vmin, vmax)

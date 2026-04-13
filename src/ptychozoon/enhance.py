@@ -484,6 +484,27 @@ class VSPIFluorescenceEnhancingAlgorithm:
 def _get_probe_intensity_at_each_position(
     probe: np.ndarray, opr_mode_weights: np.ndarray
 ) -> np.ndarray:
+    """Compute the weighted probe intensity at each scan position for OPR modes.
+
+    Combines multiple Orthogonal Probe Relaxation (OPR) modes using the
+    provided per-position mode weights, then adds the incoherent contribution
+    from higher probe modes.
+
+    Parameters
+    ----------
+    probe : ndarray
+        Complex probe array of shape ``(n_opr, modes, height, width)``.
+        May be a CuPy array for GPU computation.
+    opr_mode_weights : ndarray
+        Per-position OPR mixing coefficients of shape ``(n_opr, N)`` where
+        *N* is the number of scan positions.  May be a CuPy array.
+
+    Returns
+    -------
+    ndarray
+        Real-valued probe intensity array of shape ``(N, height, width)``,
+        giving the effective probe intensity at each scan position.
+    """
     # - probe: (n_opr, modes, height, width) complex array
     # - opr_mode_weights: (n_opr, N)
     xp = cp.get_array_module(probe)

@@ -1,0 +1,95 @@
+User Guide
+==========
+
+Installation
+------------
+
+Install the package and its core dependencies with pip:
+
+.. code-block:: bash
+
+   pip install ptychozoon
+
+For development (includes pytest):
+
+.. code-block:: bash
+
+   pip install "ptychozoon[dev]"
+
+To use the interactive :mod:`~ptychozoon.viewer` you also need PyQt5 and
+Matplotlib:
+
+.. code-block:: bash
+
+   pip install "ptychozoon[qt]"
+
+Quick Start
+-----------
+
+The typical workflow consists of three steps:
+
+1. **Load data** — read a ptychography reconstruction and a fluorescence dataset.
+2. **Run VSPI** — call :meth:`~ptychozoon.enhance.VSPIFluorescenceEnhancingAlgorithm.enhance`
+   to deconvolve the fluorescence maps.
+3. **Inspect / save results** — use the viewer or save to TIFF/HDF5.
+
+.. code-block:: python
+
+   import numpy as np
+   from ptychozoon.enhance import (
+       VSPIFluorescenceEnhancingAlgorithm,
+       ElementMap,
+       FluorescenceDataset,
+       Product,
+   )
+   from ptychozoon.settings import DeconvolutionEnhancementSettings
+   from ptychozoon.save import save_vspi_results, SaveFileExtensions
+
+   # --- Build the ptychography product ---
+   product = Product(
+       probe_positions=np.load("positions.npy"),   # (N, 2) metres, [y, x]
+       probe=np.load("probe.npy"),                 # (n_opr, modes, H, W) complex
+       object_array=np.load("object.npy"),         # (H, W) complex
+       pixel_size_m=(10e-9, 10e-9),                # 10 nm pixels
+       object_center_m=(0.0, 0.0),
+   )
+
+   # --- Build the fluorescence dataset ---
+   fe_map = ElementMap(name="Fe", counts_per_second=np.load("fe_map.npy"))
+   dataset = FluorescenceDataset(element_maps=[fe_map])
+
+   # --- Configure and run VSPI ---
+   settings = DeconvolutionEnhancementSettings()
+   settings.lsmr.max_iter = 20
+   settings.lsmr.checkpoint_interval = 5   # yield every 5 iterations
+
+   algorithm = VSPIFluorescenceEnhancingAlgorithm()
+   vspi_results = list(algorithm.enhance(dataset, product, settings=settings))
+
+   # --- Save results ---
+   save_vspi_results(
+       folder="results/",
+       name="scan_85",
+       vspi_results=vspi_results,
+       filetype=SaveFileExtensions.H5,
+   )
+
+Viewing Results Interactively
+------------------------------
+
+Use :func:`~ptychozoon.viewer.show_vspi_results` to open a PyQt5 window that
+lets you scrub through iterations and switch between element maps:
+
+.. code-block:: python
+
+   from ptychozoon.viewer import show_vspi_results
+
+   show_vspi_results(vspi_results)   # blocks until the window is closed
+
+In a Jupyter notebook with ``%gui qt`` active, pass ``block=False``:
+
+.. code-block:: python
+
+   %gui qt
+   viewer = show_vspi_results(vspi_results, block=False)
+
