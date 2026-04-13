@@ -67,11 +67,15 @@ The typical workflow consists of three steps:
    vspi_results = list(algorithm.enhance(dataset, product, settings=settings))
 
    # --- Save results ---
+   # Save every other checkpoint to an HDF5 file.
+   # The file will contain one dataset per element plus an "epochs" dataset
+   # recording the iteration number for each saved frame.
    save_vspi_results(
        folder="results/",
        name="scan_85",
        vspi_results=vspi_results,
        filetype=SaveFileExtensions.H5,
+       save_every_n_frames=2,
    )
 
 Viewing Results Interactively
@@ -92,4 +96,24 @@ In a Jupyter notebook with ``%gui qt`` active, pass ``block=False``:
 
    %gui qt
    viewer = show_vspi_results(vspi_results, block=False)
+
+Opening a Saved HDF5 File in the Viewer
+-----------------------------------------
+
+Results saved to HDF5 can be reloaded and viewed directly from the command
+line using the ``view-vspi`` entry point (installed with the package):
+
+.. code-block:: bash
+
+   view-vspi results/scan_85_all_frames.h5
+
+You can also load the file programmatically and pass the results to the viewer:
+
+.. code-block:: python
+
+   from ptychozoon.save import load_vspi_results_h5
+   from ptychozoon.viewer import show_vspi_results
+
+   vspi_results = load_vspi_results_h5("results/scan_85_all_frames.h5")
+   show_vspi_results(vspi_results)
 

@@ -23,7 +23,9 @@ def save_vspi_results(
     """Save VSPI results to disk.
 
     Each element's 2D maps across all checkpoint iterations are stacked into a
-    3D array of shape (n_frames, height, width) before saving.
+    3D array of shape (n_frames, height, width) before saving.  When saving to
+    HDF5, an additional ``"epochs"`` dataset is written containing the
+    iteration number corresponding to each frame.
 
     Args:
         folder: Parent output directory.
