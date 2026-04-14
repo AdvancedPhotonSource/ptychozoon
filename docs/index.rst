@@ -1,7 +1,7 @@
 ptychozoon
 ==========
 
-**ptychozoon** is a Python package for ptychography processing, implementing the
+**ptychozoon** is a Python package for ptychography processing, which implements the
 Virtual Single Pixel Imaging (VSPI) algorithm to enhance fluorescence maps using
 ptychography reconstruction data.
 

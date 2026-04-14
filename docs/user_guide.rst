@@ -4,7 +4,16 @@ User Guide
 Installation
 ------------
 
-Install the package and its core dependencies with pip:
+Ptychozoon uses `CuPy <https://cupy.dev/>`_ for GPU-accelerated computation.
+CuPy depends on CUDA runtime libraries (e.g. ``libnvrtc.so``) that are **not**
+bundled with its pip wheel but **are** provided by the conda-forge package.
+To avoid missing-library errors at runtime, install CuPy via conda-forge first:
+
+.. code-block:: bash
+
+   conda install -c conda-forge cupy
+
+Then install ptychozoon with pip:
 
 .. code-block:: bash
 
@@ -14,13 +23,13 @@ To use the interactive :mod:`~ptychozoon.viewer` you also need PyQt5:
 
 .. code-block:: bash
 
-   pip install "ptychozoon[qt]"
+   pip install ptychozoon[qt]
 
-For development (includes pytest):
+To install the package for development, clone the git repository and create an editable install:
 
 .. code-block:: bash
 
-   pip install "ptychozoon[dev]"
+   pip install -e ".[dev,qt]"
 
 Quick Start
 -----------
@@ -35,17 +44,13 @@ The typical workflow consists of three steps:
 .. code-block:: python
 
    import numpy as np
-   from ptychozoon.vspi_enhance import (
-       VSPIFluorescenceEnhancingAlgorithm,
-       ElementMap,
-       FluorescenceDataset,
-       Product,
-   )
+   from ptychozoon.vspi_enhance import VSPIFluorescenceEnhancingAlgorithm
+   from ptychozoon.data_structures import ElementMap, FluorescenceDataset, PtychographyProduct
    from ptychozoon.settings import DeconvolutionEnhancementSettings
    from ptychozoon.save import save_vspi_results, SaveFileExtensions
 
    # --- Build the ptychography product ---
-   product = Product(
+   ptycho_product = PtychographyProduct(
        probe_positions=np.load("positions.npy"),   # (N, 2) metres, [y, x]
        probe=np.load("probe.npy"),                 # (n_opr, modes, H, W) complex
        object_array=np.load("object.npy"),         # (H, W) complex
@@ -55,7 +60,7 @@ The typical workflow consists of three steps:
 
    # --- Build the fluorescence dataset ---
    fe_map = ElementMap(name="Fe", counts_per_second=np.load("fe_map.npy"))
-   dataset = FluorescenceDataset(element_maps=[fe_map])
+   xrf_dataset = FluorescenceDataset(element_maps=[fe_map])
 
    # --- Configure and run VSPI ---
    settings = DeconvolutionEnhancementSettings()
@@ -63,7 +68,7 @@ The typical workflow consists of three steps:
    settings.lsmr.checkpoint_interval = 5   # yield every 5 iterations
 
    algorithm = VSPIFluorescenceEnhancingAlgorithm()
-   vspi_results = list(algorithm.enhance(dataset, product, settings=settings))
+   vspi_results = list(algorithm.enhance(xrf_dataset, ptycho_product, settings=settings))
 
    # --- Save results ---
    # Save every other checkpoint to an HDF5 file.
