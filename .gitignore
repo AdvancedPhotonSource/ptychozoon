@@ -4,3 +4,4 @@ tests/data/*
 **hidden/
 docs/_build
 .claude/*
+dist/*

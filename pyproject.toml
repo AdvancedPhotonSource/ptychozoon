@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Ptychozoon: a GPU-accelerated python library for ptychography-enhanced x-ray fluorescence."
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Hanna Ruth", email = "hruth@anl.gov"}
 ]
@@ -29,6 +29,10 @@ docs = ["sphinx>=7.0", "sphinx-rtd-theme>=2.0"]
 
 [project.scripts]
 view-vspi = "ptychozoon.cli:view_vspi"
+
+[project.urls]
+Homepage = "https://github.com/AdvancedPhotonSource/ptychozoon"
+Documentation = "https://ptychozoon.readthedocs.io"
 
 [tool.setuptools.packages.find]
 where = ["src"]
