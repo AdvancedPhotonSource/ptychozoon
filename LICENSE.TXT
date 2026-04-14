@@ -3,7 +3,7 @@ Apache License
                 
 Copyright © 2026 UChicago Argonne, LLC All right reserved
 
-Title: Ptychozoon: a GPU-accelerated python library for ptycho-enhanced x-ray fluorescence.
+Title: Ptychozoon: a GPU-accelerated python library for ptychography-enhanced x-ray fluorescence.
 
 ARGONNE NATIONAL LABORATORY, WITH A FACILITY IN THE STATE OF ILLINOIS, IS OWNED BY THE UNITED STATES GOVERNMENT, AND OPERATED BY UCHICAGO ARGONNE, LLC UNDER PROVISION OF A CONTRACT WITH THE DEPARTMENT OF ENERGY.
 

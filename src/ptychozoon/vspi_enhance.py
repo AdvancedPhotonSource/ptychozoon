@@ -223,7 +223,7 @@ def _make_vspi_linear_operator(
             # import matplotlib.pyplot as plt; plt.imshow(object_array.get());plt.colorbar();plt.title("deconvolved?");plt.show()
             return object_array.flatten()
 
-    return VSPILinearOperator(interpolation_type=settings.interpolation)
+    return VSPILinearOperator(interpolation_type=settings._interpolation)
 
 
 class VSPIFluorescenceEnhancingAlgorithm:

@@ -127,6 +127,6 @@ class DeconvolutionEnhancementSettings:
 
     lsmr: LSMRSettings = field(default_factory=LSMRSettings)
 
-    interpolation: InterpolationTypes = InterpolationTypes.FOURIER
-
     gpu: GPUSettings = field(default_factory=GPUSettings)
+
+    _interpolation: InterpolationTypes = InterpolationTypes.FOURIER
