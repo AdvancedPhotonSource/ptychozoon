@@ -62,6 +62,10 @@ class LSMRSettings:
     damping_factor : float
         Tikhonov regularisation parameter.  A value of ``0.0`` (default)
         means no regularisation is applied.
+    gradient_smoothness : float
+        Gradient-smoothness regularisation weight (λ).  Penalises
+        pixel-to-pixel variation via finite-difference operators along both
+        image axes.  A value of ``0.0`` (default) disables this regulariser.
     max_iter : int
         Maximum number of LSMR iterations to run in total.
     atol : float
@@ -78,6 +82,12 @@ class LSMRSettings:
 
     damping_factor: float = 0.0
     "Damping factor for regularized least-squares"
+
+    gradient_smoothness: float = 0.0
+    """Gradient-smoothness regularisation weight (λ).  Penalises
+    pixel-to-pixel variation in the solution via finite-difference
+    operators applied along both image axes.  A value of ``0.0`` (default)
+    disables this regulariser."""
 
     max_iter: int = 10
 

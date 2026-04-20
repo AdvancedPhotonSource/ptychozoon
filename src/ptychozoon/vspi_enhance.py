@@ -226,6 +226,73 @@ def _make_vspi_linear_operator(
     return VSPILinearOperator(interpolation_type=settings._interpolation)
 
 
+def _make_gradient_regularizer(shape: tuple[int, int], lam: float, xp, LinearOperator):
+    """Build a gradient-smoothness regularisation operator for a 2-D image.
+
+    Constructs a linear operator R such that ``R @ x`` stacks the horizontal
+    and vertical finite-difference images of ``x`` (reshaped to *shape*).
+    Solving the augmented system ``[A; R] x = [b; 0]`` is equivalent to
+    minimising ``‖Ax − b‖² + λ² ‖∇x‖²``.
+
+    Args:
+        shape: ``(H, W)`` shape of the 2-D image.
+        lam: Regularisation weight λ.  Scales every output of R.
+        xp: Array module (``numpy`` or ``cupy``).
+        LinearOperator: Base class (``scipy`` or ``cupyx`` variant).
+
+    Returns:
+        LinearOperator of shape ``(H*(W-1) + (H-1)*W, H*W)``.
+    """
+    H, W = shape
+    N = H * W
+    M_reg = H * (W - 1) + (H - 1) * W
+
+    def _matvec(x):
+        f = x.reshape(H, W)
+        dx = xp.diff(f, axis=1)  # (H, W-1): horizontal differences
+        dy = xp.diff(f, axis=0)  # (H-1, W): vertical differences
+        return lam * xp.concatenate([dx.ravel(), dy.ravel()])
+
+    def _rmatvec(u):
+        u_x = u[: H * (W - 1)].reshape(H, W - 1)
+        u_y = u[H * (W - 1) :].reshape(H - 1, W)
+        # Adjoint of horizontal forward-diff: maps (H, W-1) -> (H, W)
+        result = xp.concatenate(
+            [-u_x[:, :1], -xp.diff(u_x, axis=1), u_x[:, -1:]], axis=1
+        )
+        # Adjoint of vertical forward-diff: maps (H-1, W) -> (H, W), accumulated
+        result = result + xp.concatenate(
+            [-u_y[:1, :], -xp.diff(u_y, axis=0), u_y[-1:, :]], axis=0
+        )
+        return lam * result.ravel()
+
+    return LinearOperator((M_reg, N), matvec=_matvec, rmatvec=_rmatvec, dtype=float)
+
+
+def _make_augmented_operator(A, R, xp, LinearOperator):
+    """Stack two linear operators vertically: ``[A; R]``.
+
+    Args:
+        A: Primary operator of shape ``(M_A, N)``.
+        R: Regularisation operator of shape ``(M_R, N)``.
+        xp: Array module (``numpy`` or ``cupy``).
+        LinearOperator: Base class (``scipy`` or ``cupyx`` variant).
+
+    Returns:
+        LinearOperator of shape ``(M_A + M_R, N)``.
+    """
+    M_A, N = A.shape
+    M_R, _ = R.shape
+
+    def _matvec(x):
+        return xp.concatenate([A @ x, R @ x])
+
+    def _rmatvec(u):
+        return A.T @ u[:M_A] + R.T @ u[M_A:]
+
+    return LinearOperator((M_A + M_R, N), matvec=_matvec, rmatvec=_rmatvec, dtype=float)
+
+
 class VSPIFluorescenceEnhancingAlgorithm:
     """Virtual Single Pixel Imaging algorithm for fluorescence enhancement.
 
@@ -295,14 +362,24 @@ class VSPIFluorescenceEnhancingAlgorithm:
         A = _make_vspi_linear_operator(gpu_product, xp, LinearOperator, settings)
         inline_timer.end()
 
+        e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
+
+        if settings.lsmr.gradient_smoothness > 0:
+            R = _make_gradient_regularizer(
+                e_cps_shape, settings.lsmr.gradient_smoothness, xp, LinearOperator
+            )
+            A_solve = _make_augmented_operator(A, R, xp, LinearOperator)
+            b_padding = xp.zeros(R.shape[0])
+        else:
+            A_solve = A
+            b_padding = None
+
         if select_maps is not None:
             selected_element_maps = [
                 emap for emap in dataset.element_maps if emap.name in select_maps
             ]
         else:
             selected_element_maps = dataset.element_maps
-
-        e_cps_shape = (product.object_array.shape[0], product.object_array.shape[1])
 
         # Pre-flatten and move all element maps to GPU once
         m_cps_all = {}
@@ -345,9 +422,14 @@ class VSPIFluorescenceEnhancingAlgorithm:
                 inline_timer = InlineTimer(settings.solver)
                 inline_timer.start()
                 if settings.solver == SolverTypes.LSMR:
+                    b = (
+                        xp.concatenate([m_cps_all[emap.name], b_padding])
+                        if b_padding is not None
+                        else m_cps_all[emap.name]
+                    )
                     result = lsmr(
-                        A,
-                        m_cps_all[emap.name],
+                        A_solve,
+                        b,
                         damp=settings.lsmr.damping_factor,
                         maxiter=chunk,
                         atol=settings.lsmr.atol,
